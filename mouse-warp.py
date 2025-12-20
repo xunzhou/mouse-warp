@@ -104,10 +104,17 @@ DEFAULT_CONFIG = {
     },
     'highlight': {
         'enabled': True,
-        'size': 80,
-        'duration': 0.6,
+        'style': 'edge_flash',  # brackets, edge_flash
+        'size': 40,
+        'thickness': 3,
+        'duration': 0.4,
         'monitor_warp_color': 'sky',
         'edge_warp_color': 'peach',
+        # Brackets-specific
+        'brackets_gap': 8,  # Gap around cursor
+        # Edge flash-specific
+        'edge_flash_length': 100,
+        'edge_flash_thickness': 4,
     },
     'theme': {
         'mode': 'auto',
@@ -356,72 +363,293 @@ def get_color(name):
     return palette.get(name, palette['sky'])
 
 # ============================================================================
-# Cursor Highlight
+# Visual Indicators
 # ============================================================================
 
-HIGHLIGHT_STEPS = 20
+# Thread-safe lock for indicator operations
+_indicator_lock = threading.Lock()
 
-def show_cursor_highlight(x, y, color_name='sky'):
-    """Show animated highlight at cursor position."""
+def _create_shaped_window(td, width, height, color):
+    """Create an override-redirect window with given dimensions and color."""
+    troot = td.screen().root
+    tscreen = td.screen()
+    window = troot.create_window(
+        0, 0, max(1, width), max(1, height), 0,
+        tscreen.root_depth,
+        X.InputOutput,
+        X.CopyFromParent,
+        background_pixel=color,
+        override_redirect=True,
+        event_mask=X.ExposureMask
+    )
+
+    # Set window type to notification (stacks above docks like i3bar)
+    NET_WM_WINDOW_TYPE = td.intern_atom('_NET_WM_WINDOW_TYPE')
+    NET_WM_WINDOW_TYPE_NOTIFICATION = td.intern_atom('_NET_WM_WINDOW_TYPE_NOTIFICATION')
+    window.change_property(NET_WM_WINDOW_TYPE, td.intern_atom('ATOM'), 32, [NET_WM_WINDOW_TYPE_NOTIFICATION])
+
+    # Also set _NET_WM_STATE_ABOVE for good measure
+    NET_WM_STATE = td.intern_atom('_NET_WM_STATE')
+    NET_WM_STATE_ABOVE = td.intern_atom('_NET_WM_STATE_ABOVE')
+    window.change_property(NET_WM_STATE, td.intern_atom('ATOM'), 32, [NET_WM_STATE_ABOVE])
+
+    return window
+
+
+def _apply_rect_shape(window, rects):
+    """Apply a shape mask from a list of (x, y, w, h) rectangles.
+
+    Uses the X11 shape extension to make only the specified rectangles visible.
+    """
+    if not rects:
+        return
+
+    # Find bounding box
+    min_x = min(r[0] for r in rects)
+    min_y = min(r[1] for r in rects)
+    max_x = max(r[0] + r[2] for r in rects)
+    max_y = max(r[1] + r[3] for r in rects)
+    pw = max_x - min_x
+    ph = max_y - min_y
+
+    if pw <= 0 or ph <= 0:
+        return
+
+    pixmap = window.create_pixmap(pw, ph, 1)
+    gc = pixmap.create_gc(foreground=0, background=0)
+    pixmap.fill_rectangle(gc, 0, 0, pw, ph)
+    gc.change(foreground=1)
+
+    for rx, ry, rw, rh in rects:
+        if rw > 0 and rh > 0:
+            pixmap.fill_rectangle(gc, rx - min_x, ry - min_y, rw, rh)
+
+    window.shape_mask(shape.SO.Set, shape.SK.Bounding, min_x, min_y, pixmap)
+    gc.free()
+    pixmap.free()
+
+
+def show_corner_brackets(x, y, color_name='sky'):
+    """Show four L-shaped corner brackets around the cursor position.
+
+    Visual: Four corners forming an implied box with a gap around the pointer.
+    Behavior: Quick pop-in with slight fade/scale-down over duration.
+    """
     if not config['highlight']['enabled']:
         return
 
     color = get_color(color_name)
     size = config['highlight']['size']
+    thickness = config['highlight']['thickness']
     duration = config['highlight']['duration']
+    gap = config['highlight']['brackets_gap']
 
     def animate():
         try:
             td = display.Display()
-            troot = td.screen().root
-            tscreen = td.screen()
 
-            window = troot.create_window(
-                0, 0, size, size, 0,
-                tscreen.root_depth,
-                X.InputOutput,
-                X.CopyFromParent,
-                background_pixel=color,
-                override_redirect=True,
-                event_mask=X.ExposureMask
-            )
+            # Bracket arm length (each L has two arms)
+            arm_len = size // 3
 
-            # Make it circular ring
-            pixmap = window.create_pixmap(size, size, 1)
-            gc = pixmap.create_gc(foreground=0, background=0)
-            pixmap.fill_rectangle(gc, 0, 0, size, size)
-            gc.change(foreground=1)
-            pixmap.fill_arc(gc, 0, 0, size, size, 0, 360 * 64)
+            # Calculate window bounds (covers all 4 brackets)
+            half_size = size // 2
+            win_x = x - half_size - gap
+            win_y = y - half_size - gap
+            win_w = size + 2 * gap
+            win_h = size + 2 * gap
 
-            center_size = size // 2
-            offset = (size - center_size) // 2
-            gc.change(foreground=0)
-            pixmap.fill_arc(gc, offset, offset, center_size, center_size, 0, 360 * 64)
+            window = _create_shaped_window(td, win_w, win_h, color)
 
-            window.shape_mask(shape.SO.Set, shape.SK.Bounding, 0, 0, pixmap)
-            gc.free()
-            pixmap.free()
+            # Build the 4 L-shaped brackets as rectangles
+            # Each bracket is 2 rectangles forming an L
+            # Positions relative to window origin
 
-            for i in range(HIGHLIGHT_STEPS):
-                progress = i / HIGHLIGHT_STEPS
-                scale = 1.5 - (0.5 * progress)
-                cur_size = int(size * scale)
+            # Center of window (cursor position)
+            cx = half_size + gap
+            cy = half_size + gap
 
-                pos_x = x - cur_size // 2
-                pos_y = y - cur_size // 2
+            # Inner edge of brackets (gap from cursor)
+            inner = gap
+            # Outer edge
+            outer = half_size + gap
 
-                window.configure(x=pos_x, y=pos_y, width=cur_size, height=cur_size)
-                window.map()
+            def make_bracket_rects(scale=1.0):
+                """Generate bracket rectangles at given scale."""
+                rects = []
+                scaled_arm = int(arm_len * scale)
+                scaled_thick = max(1, int(thickness * scale))
+
+                # Top-left bracket
+                # Horizontal arm: from (inner, inner) going left
+                tl_x = cx - int(outer * scale)
+                tl_y = cy - int(outer * scale)
+                rects.append((tl_x, tl_y, scaled_arm, scaled_thick))  # horizontal
+                rects.append((tl_x, tl_y, scaled_thick, scaled_arm))  # vertical
+
+                # Top-right bracket
+                tr_x = cx + int((outer - scaled_arm) * scale)
+                tr_y = cy - int(outer * scale)
+                rects.append((tr_x, tr_y, scaled_arm, scaled_thick))  # horizontal
+                rects.append((tr_x + scaled_arm - scaled_thick, tr_y, scaled_thick, scaled_arm))  # vertical
+
+                # Bottom-left bracket
+                bl_x = cx - int(outer * scale)
+                bl_y = cy + int((outer - scaled_thick) * scale)
+                rects.append((bl_x, bl_y, scaled_arm, scaled_thick))  # horizontal
+                rects.append((bl_x, bl_y - scaled_arm + scaled_thick, scaled_thick, scaled_arm))  # vertical
+
+                # Bottom-right bracket
+                br_x = cx + int((outer - scaled_arm) * scale)
+                br_y = cy + int((outer - scaled_thick) * scale)
+                rects.append((br_x, br_y, scaled_arm, scaled_thick))  # horizontal
+                rects.append((br_x + scaled_arm - scaled_thick, br_y - scaled_arm + scaled_thick, scaled_thick, scaled_arm))  # vertical
+
+                return rects
+
+            # Initial display at full scale
+            rects = make_bracket_rects(1.0)
+            _apply_rect_shape(window, rects)
+            window.configure(x=win_x, y=win_y)
+            window.map()
+            window.configure(stack_mode=X.Above)
+            td.sync()
+
+            # Animate: scale down slightly over duration
+            scale_steps = 8
+            step_time = duration / scale_steps
+            for i in range(scale_steps):
+                time.sleep(step_time)
+                # Scale from 1.0 down to 0.7
+                scale = 1.0 - (0.3 * (i + 1) / scale_steps)
+                rects = make_bracket_rects(scale)
+                _apply_rect_shape(window, rects)
                 td.sync()
-                time.sleep(duration / HIGHLIGHT_STEPS)
 
             window.destroy()
             td.close()
         except Exception as e:
-            print(f"Highlight error: {e}")
+            print(f"Brackets error: {e}")
 
     thread = threading.Thread(target=animate, daemon=True)
     thread.start()
+
+
+def show_edge_flash(edge, cross_pos, color_name='peach', edge_pos=None):
+    """Show a bright segment along the screen edge where wrap occurred.
+
+    Args:
+        edge: 'left', 'right', 'top', or 'bottom'
+        cross_pos: y-coordinate for left/right edges, x-coordinate for top/bottom
+        color_name: color from palette
+        edge_pos: exact pixel position of the edge (overrides screen bounds)
+    """
+    if not config['highlight']['enabled']:
+        return
+
+    color = get_color(color_name)
+    flash_len = config['highlight']['edge_flash_length']
+    flash_thick = config['highlight']['edge_flash_thickness']
+    duration = config['highlight']['duration'] * 0.6  # Shorter for edge flash
+
+    def animate():
+        try:
+            td = display.Display()
+            tscreen = td.screen()
+
+            # Get screen bounds
+            screen_w = tscreen.width_in_pixels
+            screen_h = tscreen.height_in_pixels
+
+            # Calculate flash position and dimensions
+            if edge == 'left':
+                edge_x = edge_pos if edge_pos is not None else 0
+                win_x = edge_x
+                win_y = max(0, cross_pos - flash_len // 2)
+                win_w = flash_thick
+                win_h = flash_len
+            elif edge == 'right':
+                edge_x = edge_pos if edge_pos is not None else screen_w
+                win_x = edge_x - flash_thick
+                win_y = max(0, cross_pos - flash_len // 2)
+                win_w = flash_thick
+                win_h = flash_len
+            elif edge == 'top':
+                edge_y = edge_pos if edge_pos is not None else 0
+                win_x = max(0, cross_pos - flash_len // 2)
+                win_y = edge_y
+                win_w = flash_len
+                win_h = flash_thick
+            elif edge == 'bottom':
+                edge_y = edge_pos if edge_pos is not None else screen_h
+                win_x = max(0, cross_pos - flash_len // 2)
+                win_y = edge_y - flash_thick
+                win_w = flash_len
+                win_h = flash_thick
+            else:
+                td.close()
+                return
+
+            # Clamp to screen
+            if edge in ('left', 'right'):
+                win_h = min(win_h, screen_h - win_y)
+            else:
+                win_w = min(win_w, screen_w - win_x)
+
+            if win_w <= 0 or win_h <= 0:
+                td.close()
+                return
+
+            window = _create_shaped_window(td, win_w, win_h, color)
+
+            # Simple rectangle shape (no complex mask needed)
+            rects = [(0, 0, win_w, win_h)]
+            _apply_rect_shape(window, rects)
+
+            window.configure(x=win_x, y=win_y)
+            window.map()
+            window.configure(stack_mode=X.Above)
+            td.sync()
+
+            # Hold then fade
+            time.sleep(duration * 0.4)
+            fade_steps = 6
+            step_time = (duration * 0.6) / fade_steps
+            for _ in range(fade_steps):
+                time.sleep(step_time)
+
+            window.destroy()
+            td.close()
+        except Exception as e:
+            print(f"Edge flash error: {e}")
+
+    thread = threading.Thread(target=animate, daemon=True)
+    thread.start()
+
+
+def show_cursor_highlight(x, y, color_name='sky', from_pos=None, edge=None, edge_pos=None):
+    """Show visual indicator at cursor position.
+
+    Dispatches to the appropriate indicator based on config style.
+
+    Args:
+        x, y: Destination cursor position
+        color_name: Color from palette
+        from_pos: Unused, kept for API compatibility
+        edge: Optional edge name ('left', 'right', 'top', 'bottom') for edge flash
+        edge_pos: exact pixel position of the edge for edge flash
+    """
+    if not config['highlight']['enabled']:
+        return
+
+    style = config['highlight']['style']
+
+    if style == 'edge_flash' and edge:
+        # For edge flash, use cursor position as cross point
+        cross_pos = y if edge in ('left', 'right') else x
+        show_edge_flash(edge, cross_pos, color_name, edge_pos)
+    else:
+        # Default to brackets
+        show_corner_brackets(x, y, color_name)
 
 # ============================================================================
 # Input Helpers
@@ -478,14 +706,22 @@ def get_screen_bounds():
     max_y = max(m[3] for m in mon_list)
     return min_x, min_y, max_x, max_y
 
-def warp_to_monitor(idx):
+def warp_to_monitor(idx, from_x=None, from_y=None):
+    """Warp cursor to center of monitor at given index.
+
+    Args:
+        idx: Monitor index
+        from_x, from_y: Previous cursor position for trail indicator
+    """
     global last_warp_time
     if 0 <= idx < len(mon_list):
         mx1, my1, mx2, my2 = mon_list[idx]
         new_x = (mx1 + mx2) // 2
         new_y = (my1 + my2) // 2
         move_mouse(new_x, new_y)
-        show_cursor_highlight(new_x, new_y, config['highlight']['monitor_warp_color'])
+        from_pos = (from_x, from_y) if from_x is not None else None
+        show_cursor_highlight(new_x, new_y, config['highlight']['monitor_warp_color'],
+                              from_pos=from_pos)
         last_warp_time = time.time()
 
 # ============================================================================
@@ -698,12 +934,12 @@ def main():
                 if delta < -threshold:
                     cur = get_monitor_at(x, y)
                     if cur > 0:
-                        warp_to_monitor(cur - 1)
+                        warp_to_monitor(cur - 1, x, y)
                         x, y = get_mouse_pos()
                 elif delta > threshold:
                     cur = get_monitor_at(x, y)
                     if cur < len(mon_list) - 1:
-                        warp_to_monitor(cur + 1)
+                        warp_to_monitor(cur + 1, x, y)
                         x, y = get_mouse_pos()
 
         prev_x = x
@@ -722,13 +958,15 @@ def main():
                     if edge_resistance.should_allow_wrap('top', x, y, now):
                         new_y = my2 - 2
                         move_mouse(x, new_y)
-                        show_cursor_highlight(x, new_y, edge_color)
+                        show_cursor_highlight(x, new_y, edge_color,
+                                              from_pos=(x, y), edge='top', edge_pos=my1)
                         edge_resistance.clear_edge('top')
                 elif y >= my2 - 1:
                     if edge_resistance.should_allow_wrap('bottom', x, y, now):
                         new_y = my1 + 1
                         move_mouse(x, new_y)
-                        show_cursor_highlight(x, new_y, edge_color)
+                        show_cursor_highlight(x, new_y, edge_color,
+                                              from_pos=(x, y), edge='bottom', edge_pos=my2)
                         edge_resistance.clear_edge('bottom')
                 else:
                     edge_resistance.clear_edge('top')
@@ -741,13 +979,15 @@ def main():
                     if edge_resistance.should_allow_wrap('left', x, y, now):
                         new_x = bounds_max_x - 2
                         move_mouse(new_x, y)
-                        show_cursor_highlight(new_x, y, edge_color)
+                        show_cursor_highlight(new_x, y, edge_color,
+                                              from_pos=(x, y), edge='left', edge_pos=bounds_min_x)
                         edge_resistance.clear_edge('left')
                 elif x >= bounds_max_x - 1:
                     if edge_resistance.should_allow_wrap('right', x, y, now):
                         new_x = bounds_min_x + 1
                         move_mouse(new_x, y)
-                        show_cursor_highlight(new_x, y, edge_color)
+                        show_cursor_highlight(new_x, y, edge_color,
+                                              from_pos=(x, y), edge='right', edge_pos=bounds_max_x)
                         edge_resistance.clear_edge('right')
                 else:
                     edge_resistance.clear_edge('left')

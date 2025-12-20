@@ -42,14 +42,27 @@ edge_resistance = 50   # Pixels of pressure needed to leave current monitor (0 t
                        # Prevents accidentally crossing to next monitor during fast movement
 
 # Visual Feedback
-# Shows animated ring at cursor position after warp/wrap
+# Shows brief indicator at cursor position after warp/wrap
 # Colors from Catppuccin palette (auto-switches for dark/light theme)
 [highlight]
 enabled = true
-size = 80           # Ring diameter in pixels
-duration = 0.6      # Animation duration in seconds
-monitor_warp_color = "sky"    # Color when jumping between monitors (Shift+move)
+style = "edge_flash"  # "brackets" or "edge_flash"
+                    #   brackets: four L-shaped corners around cursor
+                    #   edge_flash: bright segment on screen edge (edge-wrap only)
+
+size = 100           # Size of indicator in pixels (brackets box size)
+thickness = 10      # Line/bracket thickness in pixels
+duration = 0.4      # Animation duration in seconds (200-600ms recommended)
+
+monitor_warp_color = "peach"    # Color when jumping between monitors (Shift+move)
 edge_warp_color = "peach"     # Color when wrapping at screen edges
+
+# Brackets-specific options
+brackets_gap = 8    # Gap around cursor so pointer isn't obscured
+
+# Edge flash-specific options (only used when style = "edge_flash")
+edge_flash_length = 200     # Length of edge segment in pixels
+edge_flash_thickness = 10    # Thickness of edge segment in pixels
 
 # Available colors: rosewater, flamingo, pink, mauve, red, maroon,
 #                   peach, yellow, green, teal, sky, sapphire, blue, lavender
