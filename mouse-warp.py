@@ -115,6 +115,8 @@ DEFAULT_CONFIG = {
         # Edge flash-specific
         'edge_flash_length': 100,
         'edge_flash_thickness': 4,
+        'edge_warp_duration': 1.0,  # Duration for edge wrap flash
+        'monitor_cross_duration': 0.6,  # Duration for monitor crossing flash
     },
     'theme': {
         'mode': 'auto',
@@ -534,7 +536,7 @@ def show_corner_brackets(x, y, color_name='sky'):
     thread.start()
 
 
-def show_edge_flash(edge, cross_pos, color_name='peach', edge_pos=None):
+def show_edge_flash(edge, cross_pos, color_name='peach', edge_pos=None, duration=None):
     """Show a bright segment along the screen edge where wrap occurred.
 
     Args:
@@ -542,6 +544,7 @@ def show_edge_flash(edge, cross_pos, color_name='peach', edge_pos=None):
         cross_pos: y-coordinate for left/right edges, x-coordinate for top/bottom
         color_name: color from palette
         edge_pos: exact pixel position of the edge (overrides screen bounds)
+        duration: optional duration override (defaults to config duration * 0.6)
     """
     if not config['highlight']['enabled']:
         return
@@ -549,7 +552,8 @@ def show_edge_flash(edge, cross_pos, color_name='peach', edge_pos=None):
     color = get_color(color_name)
     flash_len = config['highlight']['edge_flash_length']
     flash_thick = config['highlight']['edge_flash_thickness']
-    duration = config['highlight']['duration'] * 0.6  # Shorter for edge flash
+    if duration is None:
+        duration = config['highlight']['duration'] * 0.6  # Shorter for edge flash
 
     def animate():
         try:
@@ -626,7 +630,7 @@ def show_edge_flash(edge, cross_pos, color_name='peach', edge_pos=None):
     thread.start()
 
 
-def show_cursor_highlight(x, y, color_name='sky', from_pos=None, edge=None, edge_pos=None):
+def show_cursor_highlight(x, y, color_name='sky', from_pos=None, edge=None, edge_pos=None, is_edge_warp=False):
     """Show visual indicator at cursor position.
 
     Dispatches to the appropriate indicator based on config style.
@@ -637,6 +641,7 @@ def show_cursor_highlight(x, y, color_name='sky', from_pos=None, edge=None, edge
         from_pos: Unused, kept for API compatibility
         edge: Optional edge name ('left', 'right', 'top', 'bottom') for edge flash
         edge_pos: exact pixel position of the edge for edge flash
+        is_edge_warp: If True, use longer duration for edge wrap
     """
     if not config['highlight']['enabled']:
         return
@@ -646,7 +651,8 @@ def show_cursor_highlight(x, y, color_name='sky', from_pos=None, edge=None, edge
     if style == 'edge_flash' and edge:
         # For edge flash, use cursor position as cross point
         cross_pos = y if edge in ('left', 'right') else x
-        show_edge_flash(edge, cross_pos, color_name, edge_pos)
+        duration = config['highlight']['edge_warp_duration'] if is_edge_warp else None
+        show_edge_flash(edge, cross_pos, color_name, edge_pos, duration)
     else:
         # Default to brackets
         show_corner_brackets(x, y, color_name)
@@ -830,9 +836,10 @@ prev_y = None
 last_warp_time = 0
 prev_shift_pressed = False
 accel_edge_pressure = {'left': 0, 'right': 0, 'top': 0, 'bottom': 0}
+prev_monitor = None
 
 def main():
-    global prev_x, prev_y, last_warp_time, prev_shift_pressed, accel_edge_pressure
+    global prev_x, prev_y, last_warp_time, prev_shift_pressed, accel_edge_pressure, prev_monitor
 
     print(f"Mouse warp started. Monitors: {len(mon_list)}, Screen: {SCREEN_W}x{SCREEN_H}")
     print(f"Config: {CONFIG_PATH}")
@@ -958,15 +965,19 @@ def main():
                     if edge_resistance.should_allow_wrap('top', x, y, now):
                         new_y = my2 - 2
                         move_mouse(x, new_y)
+                        # Flash at entry edge (bottom of screen where we arrive)
                         show_cursor_highlight(x, new_y, edge_color,
-                                              from_pos=(x, y), edge='top', edge_pos=my1)
+                                              from_pos=(x, y), edge='bottom', edge_pos=my2,
+                                              is_edge_warp=True)
                         edge_resistance.clear_edge('top')
                 elif y >= my2 - 1:
                     if edge_resistance.should_allow_wrap('bottom', x, y, now):
                         new_y = my1 + 1
                         move_mouse(x, new_y)
+                        # Flash at entry edge (top of screen where we arrive)
                         show_cursor_highlight(x, new_y, edge_color,
-                                              from_pos=(x, y), edge='bottom', edge_pos=my2)
+                                              from_pos=(x, y), edge='top', edge_pos=my1,
+                                              is_edge_warp=True)
                         edge_resistance.clear_edge('bottom')
                 else:
                     edge_resistance.clear_edge('top')
@@ -979,19 +990,50 @@ def main():
                     if edge_resistance.should_allow_wrap('left', x, y, now):
                         new_x = bounds_max_x - 2
                         move_mouse(new_x, y)
+                        # Flash at entry edge (right side of screen where we arrive)
                         show_cursor_highlight(new_x, y, edge_color,
-                                              from_pos=(x, y), edge='left', edge_pos=bounds_min_x)
+                                              from_pos=(x, y), edge='right', edge_pos=bounds_max_x,
+                                              is_edge_warp=True)
                         edge_resistance.clear_edge('left')
+                        last_warp_time = now
+                        prev_monitor = get_monitor_at(new_x, y)
                 elif x >= bounds_max_x - 1:
                     if edge_resistance.should_allow_wrap('right', x, y, now):
                         new_x = bounds_min_x + 1
                         move_mouse(new_x, y)
+                        # Flash at entry edge (left side of screen where we arrive)
                         show_cursor_highlight(new_x, y, edge_color,
-                                              from_pos=(x, y), edge='right', edge_pos=bounds_max_x)
+                                              from_pos=(x, y), edge='left', edge_pos=bounds_min_x,
+                                              is_edge_warp=True)
                         edge_resistance.clear_edge('right')
+                        last_warp_time = now
+                        prev_monitor = get_monitor_at(new_x, y)
                 else:
                     edge_resistance.clear_edge('left')
                     edge_resistance.clear_edge('right')
+
+        # Detect natural monitor crossing (not from warping)
+        # This must be AFTER edge wrapping to avoid double-flash
+        cur_mon = get_monitor_at(x, y)
+        if prev_monitor is not None and cur_mon != prev_monitor and (now - last_warp_time) > 0.1:
+            # Cursor moved to a different monitor naturally
+            # Show flash on the ENTRY edge of the new monitor
+            if config['highlight']['enabled']:
+                edge_color = config['highlight']['monitor_warp_color']
+                new_mx1, new_my1, new_mx2, new_my2 = mon_list[cur_mon]
+                old_mx1, old_my1, old_mx2, old_my2 = mon_list[prev_monitor]
+
+                # Determine direction based on which monitor is where
+                cross_duration = config['highlight']['monitor_cross_duration']
+                if new_mx1 > old_mx1:  # New monitor is to the RIGHT - entered from LEFT edge
+                    show_edge_flash('left', y, edge_color, edge_pos=new_mx1, duration=cross_duration)
+                elif new_mx1 < old_mx1:  # New monitor is to the LEFT - entered from RIGHT edge
+                    show_edge_flash('right', y, edge_color, edge_pos=new_mx2, duration=cross_duration)
+                elif new_my1 > old_my1:  # New monitor is BELOW - entered from TOP edge
+                    show_edge_flash('top', x, edge_color, edge_pos=new_my1, duration=cross_duration)
+                elif new_my1 < old_my1:  # New monitor is ABOVE - entered from BOTTOM edge
+                    show_edge_flash('bottom', x, edge_color, edge_pos=new_my2, duration=cross_duration)
+        prev_monitor = cur_mon
 
         # Update edge resistance tracking (must be at end of loop)
         edge_resistance.update(x, y, now)
