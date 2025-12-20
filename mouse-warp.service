@@ -1,0 +1,17 @@
+[Unit]
+Description=Mouse Warp - Screen edge wrapping and monitor switching
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=@VENV_PYTHON@ @SCRIPT_PATH@
+Restart=on-failure
+RestartSec=5
+
+# Import DISPLAY and DBUS from user session environment
+# This works better than hardcoding for Wayland/Xwayland, multi-display, etc.
+PassEnvironment=DISPLAY XAUTHORITY DBUS_SESSION_BUS_ADDRESS
+
+[Install]
+WantedBy=graphical-session.target

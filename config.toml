@@ -1,0 +1,61 @@
+# Mouse Warp Configuration
+# Reload with: kill -SIGHUP $(pgrep -f mouse-warp)
+
+[general]
+poll_interval = 0.01  # Main loop interval in seconds
+
+# Edge Wrapping
+# Cursor teleports to opposite edge when hitting screen boundaries
+[edge_wrap]
+enabled = true
+horizontal = true  # Wrap at left/right screen edges
+vertical = true    # Wrap at top/bottom monitor edges
+
+# Edge Resistance (for edge wrapping)
+# Adds friction before allowing cursor to wrap at edges
+[edge_resistance]
+enabled = true
+mode = "distance"  # "time", "distance", "velocity", or "none"
+
+# Time mode: cursor must stay at edge for delay before wrapping
+time_delay = 0.15  # seconds to wait at edge
+
+# Distance mode: must keep pushing into edge to build up "pressure"
+distance_threshold = 30  # pixels of pressure needed to wrap
+
+# Velocity mode: only fast movements trigger wrap
+velocity_threshold = 800  # pixels/second minimum speed to wrap
+
+# Monitor Switching
+# Hold Shift and move mouse horizontally to jump to adjacent monitor
+[monitor_switch]
+enabled = true
+shift_threshold = 100  # pixels of horizontal movement needed while holding Shift
+
+# Cursor Acceleration
+# Hold Ctrl to multiply mouse movement speed
+# Useful for large/multiple monitors
+[acceleration]
+enabled = true
+multiplier = 2.0       # Movement multiplier (2.0 = twice as fast)
+edge_resistance = 50   # Pixels of pressure needed to leave current monitor (0 to disable)
+                       # Prevents accidentally crossing to next monitor during fast movement
+
+# Visual Feedback
+# Shows animated ring at cursor position after warp/wrap
+# Colors from Catppuccin palette (auto-switches for dark/light theme)
+[highlight]
+enabled = true
+size = 80           # Ring diameter in pixels
+duration = 0.6      # Animation duration in seconds
+monitor_warp_color = "sky"    # Color when jumping between monitors (Shift+move)
+edge_warp_color = "peach"     # Color when wrapping at screen edges
+
+# Available colors: rosewater, flamingo, pink, mauve, red, maroon,
+#                   peach, yellow, green, teal, sky, sapphire, blue, lavender
+
+# Theme Detection
+# Controls which color palette to use for highlights
+[theme]
+mode = "auto"      # "auto" (detect from system), "dark", or "light"
+cache_ttl = 5.0    # Seconds to cache theme detection result
