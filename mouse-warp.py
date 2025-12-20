@@ -26,6 +26,12 @@ except ImportError:
     print("Error: python-xlib is required. Install with: pip install python-xlib")
     sys.exit(1)
 
+try:
+    from Xlib.ext import randr
+    HAS_RANDR = True
+except ImportError:
+    HAS_RANDR = False
+
 # ============================================================================
 # Binary Dependencies
 # ============================================================================
@@ -149,9 +155,12 @@ def load_config():
 config = load_config()
 
 def reload_config(signum=None, frame=None):
-    """Reload configuration on SIGHUP."""
+    """Reload configuration and refresh monitor geometry on SIGHUP."""
     global config
     config = load_config()
+    # Refresh monitor geometry (function defined later, guard for module load time)
+    if 'refresh_monitor_geometry' in globals():
+        refresh_monitor_geometry(force=True)
     print("Configuration reloaded")
 
 # Register SIGHUP handler
@@ -170,48 +179,105 @@ except Exception as e:
     print("This tool requires an X11 session.")
     sys.exit(1)
 
-# Parse monitors with fallback
+# Monitor geometry (refreshed on RandR events)
 mon_list = []
 SCREEN_W = 0
 SCREEN_H = 0
+_last_geometry_refresh = 0
+GEOMETRY_REFRESH_DEBOUNCE = 0.2  # seconds
 
-if has_binary('xrandr'):
+def refresh_monitor_geometry(force=False):
+    """Refresh monitor list and screen dimensions from xrandr/xdpyinfo.
+
+    Returns True if geometry changed, False otherwise.
+    Debounces rapid calls unless force=True.
+    """
+    global mon_list, SCREEN_W, SCREEN_H, _last_geometry_refresh
+
+    now = time.time()
+    if not force and (now - _last_geometry_refresh) < GEOMETRY_REFRESH_DEBOUNCE:
+        return False
+    _last_geometry_refresh = now
+
+    old_mon_list = mon_list[:]
+    old_screen = (SCREEN_W, SCREEN_H)
+
+    new_mon_list = []
+    new_screen_w = 0
+    new_screen_h = 0
+
+    if has_binary('xrandr'):
+        try:
+            output = subprocess.run(['xrandr'], capture_output=True, text=True, timeout=5)
+            if output.returncode == 0:
+                for line in output.stdout.split('\n'):
+                    if ' connected' in line:
+                        match = re.search(r'(\d+)x(\d+)\+(\d+)\+(\d+)', line)
+                        if match:
+                            w, h, x, y = map(int, match.groups())
+                            new_mon_list.append((x, y, x + w, y + h))
+        except Exception as e:
+            print(f"Warning: xrandr failed: {e}")
+
+    if has_binary('xdpyinfo'):
+        try:
+            output = subprocess.run(['xdpyinfo'], capture_output=True, text=True, timeout=5)
+            if output.returncode == 0:
+                for line in output.stdout.split('\n'):
+                    if 'dimensions:' in line:
+                        dims = line.split()[1].split('x')
+                        new_screen_w = int(dims[0])
+                        new_screen_h = int(dims[1])
+                        break
+        except Exception as e:
+            print(f"Warning: xdpyinfo failed: {e}")
+
+    # Fallback: use root window geometry if xrandr/xdpyinfo failed
+    if not new_mon_list or new_screen_w == 0:
+        geom = root.get_geometry()
+        new_screen_w = geom.width
+        new_screen_h = geom.height
+        if not new_mon_list:
+            new_mon_list = [(0, 0, new_screen_w, new_screen_h)]
+
+    # Sort monitors by x position for horizontal arrangement
+    new_mon_list.sort(key=lambda m: (m[0], m[1]))
+
+    # Update globals
+    mon_list = new_mon_list
+    SCREEN_W = new_screen_w
+    SCREEN_H = new_screen_h
+
+    changed = (mon_list != old_mon_list or (SCREEN_W, SCREEN_H) != old_screen)
+    if changed and old_mon_list:  # Don't print on initial load
+        print(f"Monitors updated: {len(mon_list)} monitor(s), {SCREEN_W}x{SCREEN_H}")
+        # Reset edge resistance state (edge_resistance defined later, guard for initial call)
+        if 'edge_resistance' in globals():
+            edge_resistance.reset()
+        # Reset prev position to avoid spurious deltas after geometry change
+        global prev_x, prev_y
+        if 'prev_x' in globals():
+            prev_x = None
+            prev_y = None
+
+    return changed
+
+# Initial geometry detection
+refresh_monitor_geometry(force=True)
+
+# Subscribe to RandR screen change events
+_randr_event_base = None
+if HAS_RANDR:
     try:
-        output = subprocess.run(['xrandr'], capture_output=True, text=True, timeout=5)
-        if output.returncode == 0:
-            for line in output.stdout.split('\n'):
-                if ' connected' in line:
-                    match = re.search(r'(\d+)x(\d+)\+(\d+)\+(\d+)', line)
-                    if match:
-                        w, h, x, y = map(int, match.groups())
-                        mon_list.append((x, y, x + w, y + h))
+        ext_info = d.query_extension('RANDR')
+        if ext_info.present:
+            _randr_event_base = ext_info.first_event
+            root.xrandr_select_input(randr.RRScreenChangeNotifyMask)
+        else:
+            HAS_RANDR = False
     except Exception as e:
-        print(f"Warning: xrandr failed: {e}")
-
-if has_binary('xdpyinfo'):
-    try:
-        output = subprocess.run(['xdpyinfo'], capture_output=True, text=True, timeout=5)
-        if output.returncode == 0:
-            for line in output.stdout.split('\n'):
-                if 'dimensions:' in line:
-                    dims = line.split()[1].split('x')
-                    SCREEN_W = int(dims[0])
-                    SCREEN_H = int(dims[1])
-                    break
-    except Exception as e:
-        print(f"Warning: xdpyinfo failed: {e}")
-
-# Fallback: use root window geometry if xrandr/xdpyinfo failed
-if not mon_list or SCREEN_W == 0:
-    geom = root.get_geometry()
-    SCREEN_W = geom.width
-    SCREEN_H = geom.height
-    if not mon_list:
-        mon_list = [(0, 0, SCREEN_W, SCREEN_H)]
-        print(f"Warning: Using single monitor fallback: {SCREEN_W}x{SCREEN_H}")
-
-# Sort monitors by x position for horizontal arrangement
-mon_list.sort(key=lambda m: (m[0], m[1]))
+        print(f"Warning: RandR event subscription failed: {e}")
+        HAS_RANDR = False
 
 # ============================================================================
 # Color Palettes
@@ -402,6 +468,16 @@ def get_monitor_at(cx, cy):
             closest = i
     return closest
 
+def get_screen_bounds():
+    """Get actual screen bounds from monitor list (not X screen dimensions)."""
+    if not mon_list:
+        return 0, 0, SCREEN_W, SCREEN_H
+    min_x = min(m[0] for m in mon_list)
+    min_y = min(m[1] for m in mon_list)
+    max_x = max(m[2] for m in mon_list)
+    max_y = max(m[3] for m in mon_list)
+    return min_x, min_y, max_x, max_y
+
 def warp_to_monitor(idx):
     global last_warp_time
     if 0 <= idx < len(mon_list):
@@ -524,9 +600,16 @@ def main():
 
     print(f"Mouse warp started. Monitors: {len(mon_list)}, Screen: {SCREEN_W}x{SCREEN_H}")
     print(f"Config: {CONFIG_PATH}")
-    print("Send SIGHUP to reload config")
+    print("Send SIGHUP to reload config" + (" (or monitors will auto-refresh)" if HAS_RANDR else ""))
 
     while True:
+        # Check for RandR screen change events (non-blocking)
+        if HAS_RANDR:
+            while d.pending_events():
+                event = d.next_event()
+                if _randr_event_base and event.type == _randr_event_base:
+                    refresh_monitor_geometry()
+
         x, y = get_mouse_pos()
         now = time.time()
         shift_pressed = is_shift_pressed()
@@ -651,17 +734,18 @@ def main():
                     edge_resistance.clear_edge('top')
                     edge_resistance.clear_edge('bottom')
 
-            # Horizontal wrap
+            # Horizontal wrap (use actual monitor bounds, not X screen dimensions)
             if config['edge_wrap']['horizontal']:
-                if x <= 0:
+                bounds_min_x, _, bounds_max_x, _ = get_screen_bounds()
+                if x <= bounds_min_x:
                     if edge_resistance.should_allow_wrap('left', x, y, now):
-                        new_x = SCREEN_W - 2
+                        new_x = bounds_max_x - 2
                         move_mouse(new_x, y)
                         show_cursor_highlight(new_x, y, edge_color)
                         edge_resistance.clear_edge('left')
-                elif x >= SCREEN_W - 1:
+                elif x >= bounds_max_x - 1:
                     if edge_resistance.should_allow_wrap('right', x, y, now):
-                        new_x = 1
+                        new_x = bounds_min_x + 1
                         move_mouse(new_x, y)
                         show_cursor_highlight(new_x, y, edge_color)
                         edge_resistance.clear_edge('right')
