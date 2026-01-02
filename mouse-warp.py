@@ -104,7 +104,8 @@ DEFAULT_CONFIG = {
     },
     'highlight': {
         'enabled': True,
-        'style': 'edge_flash',  # brackets, edge_flash
+        'style': 'edge_flash',  # brackets, edge_flash (for edge wrapping)
+        'monitor_cross_style': 'brackets',  # brackets, edge_flash (for monitor switches)
         'size': 40,
         'thickness': 3,
         'duration': 0.4,
@@ -725,9 +726,22 @@ def warp_to_monitor(idx, from_x=None, from_y=None):
         new_x = (mx1 + mx2) // 2
         new_y = (my1 + my2) // 2
         move_mouse(new_x, new_y)
-        from_pos = (from_x, from_y) if from_x is not None else None
-        show_cursor_highlight(new_x, new_y, config['highlight']['monitor_warp_color'],
-                              from_pos=from_pos)
+
+        # Use monitor_cross_style for Shift+move monitor switching
+        if config['highlight']['enabled']:
+            color = config['highlight']['monitor_warp_color']
+            style = config['highlight']['monitor_cross_style']
+            if style == 'brackets':
+                show_corner_brackets(new_x, new_y, color)
+            else:
+                # Determine entry edge based on direction
+                if from_x is not None and from_x < new_x:
+                    show_edge_flash('left', new_y, color, edge_pos=mx1)
+                elif from_x is not None and from_x > new_x:
+                    show_edge_flash('right', new_y, color, edge_pos=mx2)
+                else:
+                    show_corner_brackets(new_x, new_y, color)
+
         last_warp_time = time.time()
 
 # ============================================================================
@@ -1016,23 +1030,30 @@ def main():
         # This must be AFTER edge wrapping to avoid double-flash
         cur_mon = get_monitor_at(x, y)
         if prev_monitor is not None and cur_mon != prev_monitor and (now - last_warp_time) > 0.1:
-            # Cursor moved to a different monitor naturally
-            # Show flash on the ENTRY edge of the new monitor
+            # Cursor moved to a different monitor naturally (e.g., i3 workspace switch)
+            # Show visual indicator at the cursor's new position
             if config['highlight']['enabled']:
                 edge_color = config['highlight']['monitor_warp_color']
-                new_mx1, new_my1, new_mx2, new_my2 = mon_list[cur_mon]
-                old_mx1, old_my1, old_mx2, old_my2 = mon_list[prev_monitor]
+                style = config['highlight']['monitor_cross_style']
 
-                # Determine direction based on which monitor is where
-                cross_duration = config['highlight']['monitor_cross_duration']
-                if new_mx1 > old_mx1:  # New monitor is to the RIGHT - entered from LEFT edge
-                    show_edge_flash('left', y, edge_color, edge_pos=new_mx1, duration=cross_duration)
-                elif new_mx1 < old_mx1:  # New monitor is to the LEFT - entered from RIGHT edge
-                    show_edge_flash('right', y, edge_color, edge_pos=new_mx2, duration=cross_duration)
-                elif new_my1 > old_my1:  # New monitor is BELOW - entered from TOP edge
-                    show_edge_flash('top', x, edge_color, edge_pos=new_my1, duration=cross_duration)
-                elif new_my1 < old_my1:  # New monitor is ABOVE - entered from BOTTOM edge
-                    show_edge_flash('bottom', x, edge_color, edge_pos=new_my2, duration=cross_duration)
+                if style == 'brackets':
+                    # Show brackets around cursor at new position
+                    show_corner_brackets(x, y, edge_color)
+                else:
+                    # Show flash on the ENTRY edge of the new monitor
+                    new_mx1, new_my1, new_mx2, new_my2 = mon_list[cur_mon]
+                    old_mx1, old_my1, old_mx2, old_my2 = mon_list[prev_monitor]
+
+                    # Determine direction based on which monitor is where
+                    cross_duration = config['highlight']['monitor_cross_duration']
+                    if new_mx1 > old_mx1:  # New monitor is to the RIGHT - entered from LEFT edge
+                        show_edge_flash('left', y, edge_color, edge_pos=new_mx1, duration=cross_duration)
+                    elif new_mx1 < old_mx1:  # New monitor is to the LEFT - entered from RIGHT edge
+                        show_edge_flash('right', y, edge_color, edge_pos=new_mx2, duration=cross_duration)
+                    elif new_my1 > old_my1:  # New monitor is BELOW - entered from TOP edge
+                        show_edge_flash('top', x, edge_color, edge_pos=new_my1, duration=cross_duration)
+                    elif new_my1 < old_my1:  # New monitor is ABOVE - entered from BOTTOM edge
+                        show_edge_flash('bottom', x, edge_color, edge_pos=new_my2, duration=cross_duration)
         prev_monitor = cur_mon
 
         # Update edge resistance tracking (must be at end of loop)

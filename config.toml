@@ -46,9 +46,10 @@ edge_resistance = 50 # Pixels of pressure needed to leave current monitor (0 to 
 # Colors from Catppuccin palette (auto-switches for dark/light theme)
 [highlight]
 enabled = true
-style = "edge_flash" # "brackets" or "edge_flash"
+style = "edge_flash"        # "brackets" or "edge_flash" (for edge wrapping)
+monitor_cross_style = "brackets"  # "brackets" or "edge_flash" (for Shift+move and workspace switches)
 #   brackets: four L-shaped corners around cursor
-#   edge_flash: bright segment on screen edge (edge-wrap only)
+#   edge_flash: bright segment on screen edge
 
 size = 100     # Size of indicator in pixels (brackets box size)
 thickness = 10 # Line/bracket thickness in pixels
