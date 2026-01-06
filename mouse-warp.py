@@ -27,6 +27,12 @@ except ImportError:
     sys.exit(1)
 
 try:
+    import i3ipc
+    HAS_I3IPC = True
+except ImportError:
+    HAS_I3IPC = False
+
+try:
     from Xlib.ext import randr
     HAS_RANDR = True
 except ImportError:
@@ -79,7 +85,7 @@ CONFIG_PATH = Path.home() / ".config" / "mouse-warp" / "config.toml"
 
 DEFAULT_CONFIG = {
     'general': {
-        'poll_interval': 0.01,
+        'poll_interval': 0.02,  # 20ms - balances responsiveness vs CPU usage
     },
     'edge_wrap': {
         'enabled': True,
@@ -106,6 +112,7 @@ DEFAULT_CONFIG = {
         'enabled': True,
         'style': 'edge_flash',  # brackets, edge_flash (for edge wrapping)
         'monitor_cross_style': 'brackets',  # brackets, edge_flash (for monitor switches)
+        'natural_cross_threshold': 200,  # pixels from edge to count as natural crossing
         'size': 40,
         'thickness': 3,
         'duration': 0.4,
@@ -122,6 +129,11 @@ DEFAULT_CONFIG = {
     'theme': {
         'mode': 'auto',
         'cache_ttl': 5.0,
+    },
+    'focus_warp': {
+        'enabled': True,
+        'position': 'center',  # center, or ratio like "0.5,0.5"
+        'skip_floating': False,  # skip floating windows
     },
 }
 
@@ -188,6 +200,9 @@ except Exception as e:
     print(f"Error: Cannot connect to X display: {e}")
     print("This tool requires an X11 session.")
     sys.exit(1)
+
+# Lock for thread-safe X display access (Xlib is not thread-safe)
+_display_lock = threading.Lock()
 
 # Monitor geometry (refreshed on RandR events)
 mon_list = []
@@ -448,6 +463,8 @@ def show_corner_brackets(x, y, color_name='sky'):
     gap = config['highlight']['brackets_gap']
 
     def animate():
+        td = None
+        window = None
         try:
             td = display.Display()
 
@@ -527,11 +544,19 @@ def show_corner_brackets(x, y, color_name='sky'):
                 rects = make_bracket_rects(scale)
                 _apply_rect_shape(window, rects)
                 td.sync()
-
-            window.destroy()
-            td.close()
         except Exception as e:
             print(f"Brackets error: {e}")
+        finally:
+            if window:
+                try:
+                    window.destroy()
+                except:
+                    pass
+            if td:
+                try:
+                    td.close()
+                except:
+                    pass
 
     thread = threading.Thread(target=animate, daemon=True)
     thread.start()
@@ -557,6 +582,8 @@ def show_edge_flash(edge, cross_pos, color_name='peach', edge_pos=None, duration
         duration = config['highlight']['duration'] * 0.6  # Shorter for edge flash
 
     def animate():
+        td = None
+        window = None
         try:
             td = display.Display()
             tscreen = td.screen()
@@ -591,7 +618,6 @@ def show_edge_flash(edge, cross_pos, color_name='peach', edge_pos=None, duration
                 win_w = flash_len
                 win_h = flash_thick
             else:
-                td.close()
                 return
 
             # Clamp to screen
@@ -601,7 +627,6 @@ def show_edge_flash(edge, cross_pos, color_name='peach', edge_pos=None, duration
                 win_w = min(win_w, screen_w - win_x)
 
             if win_w <= 0 or win_h <= 0:
-                td.close()
                 return
 
             window = _create_shaped_window(td, win_w, win_h, color)
@@ -621,11 +646,19 @@ def show_edge_flash(edge, cross_pos, color_name='peach', edge_pos=None, duration
             step_time = (duration * 0.6) / fade_steps
             for _ in range(fade_steps):
                 time.sleep(step_time)
-
-            window.destroy()
-            td.close()
         except Exception as e:
             print(f"Edge flash error: {e}")
+        finally:
+            if window:
+                try:
+                    window.destroy()
+                except:
+                    pass
+            if td:
+                try:
+                    td.close()
+                except:
+                    pass
 
     thread = threading.Thread(target=animate, daemon=True)
     thread.start()
@@ -659,22 +692,129 @@ def show_cursor_highlight(x, y, color_name='sky', from_pos=None, edge=None, edge
         show_corner_brackets(x, y, color_name)
 
 # ============================================================================
+# Focus Warp (i3 IPC)
+# ============================================================================
+
+_last_focus_warp_time = 0
+_focus_warp_thread = None
+
+def _get_warp_position(container):
+    """Calculate cursor position within a container based on config."""
+    rect = container.rect
+    pos = config['focus_warp']['position']
+
+    if pos == 'center':
+        x = rect.x + rect.width // 2
+        y = rect.y + rect.height // 2
+    else:
+        # Parse ratio like "0.5,0.5" or "0.33,0.33"
+        try:
+            rx, ry = map(float, pos.split(','))
+            x = rect.x + int(rect.width * rx)
+            y = rect.y + int(rect.height * ry)
+        except:
+            # Fallback to center
+            x = rect.x + rect.width // 2
+            y = rect.y + rect.height // 2
+
+    return x, y
+
+def _on_window_focus(i3, event):
+    """Handle i3 window focus events."""
+    global _last_focus_warp_time
+
+    if not config['focus_warp']['enabled']:
+        return
+
+    container = event.container
+    if not container:
+        return
+
+    # Skip floating windows if configured
+    if config['focus_warp']['skip_floating'] and container.floating:
+        return
+
+    # Get current mouse position
+    try:
+        cur_x, cur_y = get_mouse_pos()
+    except:
+        return
+
+    # Check if mouse is already inside the focused window
+    rect = container.rect
+    if (rect.x <= cur_x < rect.x + rect.width and
+        rect.y <= cur_y < rect.y + rect.height):
+        # Mouse already in window - likely clicked to focus, skip warp
+        return
+
+    # Calculate target position
+    new_x, new_y = _get_warp_position(container)
+
+    # Warp cursor
+    move_mouse(new_x, new_y)
+    _last_focus_warp_time = time.time()
+
+    # Visual feedback
+    if config['highlight']['enabled']:
+        color = config['highlight']['monitor_warp_color']
+        style = config['highlight']['monitor_cross_style']
+        if style == 'brackets':
+            show_corner_brackets(new_x, new_y, color)
+        else:
+            # Determine entry edge based on direction
+            if cur_x < new_x:
+                show_edge_flash('left', new_y, color, edge_pos=rect.x)
+            elif cur_x > new_x:
+                show_edge_flash('right', new_y, color, edge_pos=rect.x + rect.width)
+            else:
+                show_corner_brackets(new_x, new_y, color)
+
+def start_focus_warp_listener():
+    """Start i3 IPC listener in a background thread."""
+    global _focus_warp_thread
+
+    if not HAS_I3IPC:
+        print("Warning: i3ipc not available, focus_warp disabled")
+        print("  Install with: pip install i3ipc")
+        return
+
+    if not config['focus_warp']['enabled']:
+        return
+
+    def run_listener():
+        try:
+            i3 = i3ipc.Connection()
+            i3.on(i3ipc.Event.WINDOW_FOCUS, _on_window_focus)
+            print("Focus warp: listening for i3 focus events")
+            i3.main()
+        except Exception as e:
+            print(f"Focus warp error: {e}")
+
+    _focus_warp_thread = threading.Thread(target=run_listener, daemon=True)
+    _focus_warp_thread.start()
+
+# ============================================================================
 # Input Helpers
 # ============================================================================
 
-def is_shift_pressed():
-    """Check if Shift key is pressed using modifier state."""
-    data = root.query_pointer()
-    return bool(data.mask & X.ShiftMask)
+def query_pointer():
+    """Query pointer once and return all info (x, y, shift, ctrl).
 
-def is_ctrl_pressed():
-    """Check if Ctrl key is pressed using modifier state."""
-    data = root.query_pointer()
-    return bool(data.mask & X.ControlMask)
+    This is more efficient than separate calls - reduces X11 queries from 3 to 1.
+    """
+    with _display_lock:
+        data = root.query_pointer()
+        return (
+            data.root_x,
+            data.root_y,
+            bool(data.mask & X.ShiftMask),
+            bool(data.mask & X.ControlMask),
+        )
 
 def get_mouse_pos():
-    data = root.query_pointer()
-    return data.root_x, data.root_y
+    """Get mouse position (legacy helper)."""
+    x, y, _, _ = query_pointer()
+    return x, y
 
 def move_mouse(x, y):
     """Move mouse to position. Returns True on success."""
@@ -859,6 +999,9 @@ def main():
     print(f"Config: {CONFIG_PATH}")
     print("Send SIGHUP to reload config" + (" (or monitors will auto-refresh)" if HAS_RANDR else ""))
 
+    # Start focus warp listener (i3 IPC)
+    start_focus_warp_listener()
+
     while True:
         # Check for RandR screen change events (non-blocking)
         if HAS_RANDR:
@@ -867,10 +1010,8 @@ def main():
                 if _randr_event_base and event.type == _randr_event_base:
                     refresh_monitor_geometry()
 
-        x, y = get_mouse_pos()
+        x, y, shift_pressed, ctrl_pressed = query_pointer()
         now = time.time()
-        shift_pressed = is_shift_pressed()
-        ctrl_pressed = is_ctrl_pressed()
 
         # Ctrl + movement: accelerate cursor within monitor
         if config['acceleration']['enabled'] and ctrl_pressed and prev_x is not None:
@@ -1030,30 +1171,64 @@ def main():
         # This must be AFTER edge wrapping to avoid double-flash
         cur_mon = get_monitor_at(x, y)
         if prev_monitor is not None and cur_mon != prev_monitor and (now - last_warp_time) > 0.1:
-            # Cursor moved to a different monitor naturally (e.g., i3 workspace switch)
-            # Show visual indicator at the cursor's new position
+            # Cursor moved to a different monitor
+            # Distinguish natural mouse crossing (at edge) from teleport (i3 workspace switch)
             if config['highlight']['enabled']:
                 edge_color = config['highlight']['monitor_warp_color']
-                style = config['highlight']['monitor_cross_style']
+                new_mx1, new_my1, new_mx2, new_my2 = mon_list[cur_mon]
+                old_mx1, old_my1, old_mx2, old_my2 = mon_list[prev_monitor]
 
-                if style == 'brackets':
-                    # Show brackets around cursor at new position
-                    show_corner_brackets(x, y, edge_color)
-                else:
-                    # Show flash on the ENTRY edge of the new monitor
-                    new_mx1, new_my1, new_mx2, new_my2 = mon_list[cur_mon]
-                    old_mx1, old_my1, old_mx2, old_my2 = mon_list[prev_monitor]
+                # Check if cursor is near the shared edge (natural crossing)
+                # vs. teleported to arbitrary position (i3 workspace switch)
+                edge_threshold = config['highlight']['natural_cross_threshold']
+                is_natural_crossing = False
+                entry_edge = None
+                entry_edge_pos = None
 
-                    # Determine direction based on which monitor is where
+                if new_mx1 > old_mx1:  # New monitor is to the RIGHT
+                    if x < new_mx1 + edge_threshold:
+                        is_natural_crossing = True
+                        entry_edge = 'left'
+                        entry_edge_pos = new_mx1
+                elif new_mx1 < old_mx1:  # New monitor is to the LEFT
+                    if x > new_mx2 - edge_threshold:
+                        is_natural_crossing = True
+                        entry_edge = 'right'
+                        entry_edge_pos = new_mx2
+                elif new_my1 > old_my1:  # New monitor is BELOW
+                    if y < new_my1 + edge_threshold:
+                        is_natural_crossing = True
+                        entry_edge = 'top'
+                        entry_edge_pos = new_my1
+                elif new_my1 < old_my1:  # New monitor is ABOVE
+                    if y > new_my2 - edge_threshold:
+                        is_natural_crossing = True
+                        entry_edge = 'bottom'
+                        entry_edge_pos = new_my2
+
+                if is_natural_crossing:
+                    # Natural mouse crossing at boundary - always use edge_flash
                     cross_duration = config['highlight']['monitor_cross_duration']
-                    if new_mx1 > old_mx1:  # New monitor is to the RIGHT - entered from LEFT edge
-                        show_edge_flash('left', y, edge_color, edge_pos=new_mx1, duration=cross_duration)
-                    elif new_mx1 < old_mx1:  # New monitor is to the LEFT - entered from RIGHT edge
-                        show_edge_flash('right', y, edge_color, edge_pos=new_mx2, duration=cross_duration)
-                    elif new_my1 > old_my1:  # New monitor is BELOW - entered from TOP edge
-                        show_edge_flash('top', x, edge_color, edge_pos=new_my1, duration=cross_duration)
-                    elif new_my1 < old_my1:  # New monitor is ABOVE - entered from BOTTOM edge
-                        show_edge_flash('bottom', x, edge_color, edge_pos=new_my2, duration=cross_duration)
+                    cross_pos = y if entry_edge in ('left', 'right') else x
+                    show_edge_flash(entry_edge, cross_pos, edge_color, edge_pos=entry_edge_pos, duration=cross_duration)
+                    last_warp_time = now  # Prevent double-trigger
+                else:
+                    # Teleport (i3 workspace switch) - use monitor_cross_style
+                    style = config['highlight']['monitor_cross_style']
+                    if style == 'brackets':
+                        show_corner_brackets(x, y, edge_color)
+                    else:
+                        # Determine direction for edge_flash
+                        cross_duration = config['highlight']['monitor_cross_duration']
+                        if new_mx1 > old_mx1:
+                            show_edge_flash('left', y, edge_color, edge_pos=new_mx1, duration=cross_duration)
+                        elif new_mx1 < old_mx1:
+                            show_edge_flash('right', y, edge_color, edge_pos=new_mx2, duration=cross_duration)
+                        elif new_my1 > old_my1:
+                            show_edge_flash('top', x, edge_color, edge_pos=new_my1, duration=cross_duration)
+                        elif new_my1 < old_my1:
+                            show_edge_flash('bottom', x, edge_color, edge_pos=new_my2, duration=cross_duration)
+                    last_warp_time = now  # Prevent double-trigger
         prev_monitor = cur_mon
 
         # Update edge resistance tracking (must be at end of loop)

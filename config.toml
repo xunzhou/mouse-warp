@@ -2,7 +2,7 @@
 # Reload with: kill -SIGHUP $(pgrep -f mouse-warp)
 
 [general]
-poll_interval = 0.01 # Main loop interval in seconds
+poll_interval = 0.02 # Main loop interval in seconds (20ms balances responsiveness vs CPU)
 
 # Edge Wrapping
 # Cursor teleports to opposite edge when hitting screen boundaries
@@ -47,9 +47,11 @@ edge_resistance = 50 # Pixels of pressure needed to leave current monitor (0 to 
 [highlight]
 enabled = true
 style = "edge_flash"        # "brackets" or "edge_flash" (for edge wrapping)
-monitor_cross_style = "brackets"  # "brackets" or "edge_flash" (for Shift+move and workspace switches)
+monitor_cross_style = "brackets"  # "brackets" or "edge_flash" (for Shift+move and i3 workspace switches)
 #   brackets: four L-shaped corners around cursor
 #   edge_flash: bright segment on screen edge
+# Note: Natural mouse crossing at monitor boundaries always uses edge_flash
+natural_cross_threshold = 200  # pixels from edge to detect natural crossing vs teleport
 
 size = 100     # Size of indicator in pixels (brackets box size)
 thickness = 10 # Line/bracket thickness in pixels
@@ -73,3 +75,11 @@ edge_flash_thickness = 10 # Thickness of edge segment in pixels
 [theme]
 mode = "auto"   # "auto" (detect from system), "dark", or "light"
 cache_ttl = 5.0 # Seconds to cache theme detection result
+
+# Focus Warp (Mouse Follows Focus)
+# Automatically warps cursor to focused window when focus changes via keyboard
+# Requires: pip install i3ipc
+[focus_warp]
+enabled = true
+position = "center"    # "center" or ratio like "0.33,0.33" (top-left third)
+skip_floating = false  # Skip warping to floating windows
