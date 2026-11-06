@@ -9,6 +9,9 @@ install:
 	python3 -m venv $(VENV_DIR)
 	$(VENV_DIR)/bin/pip install -r requirements.txt
 	install -Dm755 mouse-warp.py $(PREFIX)/bin/mouse-warp.py
+	install -Dm644 shake_find.py $(PREFIX)/bin/shake_find.py
+	install -Dm644 cursor_shapes.py $(PREFIX)/bin/cursor_shapes.py
+	install -Dm644 theme_cursor.py $(PREFIX)/bin/theme_cursor.py
 	install -Dm644 mouse-warp.service $(SYSTEMD_USER_DIR)/mouse-warp.service
 	sed -i 's|@VENV_PYTHON@|$(VENV_DIR)/bin/python|' $(SYSTEMD_USER_DIR)/mouse-warp.service
 	sed -i 's|@SCRIPT_PATH@|$(PREFIX)/bin/mouse-warp.py|' $(SYSTEMD_USER_DIR)/mouse-warp.service
@@ -27,7 +30,7 @@ import-env:
 uninstall:
 	-systemctl --user stop mouse-warp.service
 	-systemctl --user disable mouse-warp.service
-	rm -f $(PREFIX)/bin/mouse-warp.py $(SYSTEMD_USER_DIR)/mouse-warp.service
+	rm -f $(PREFIX)/bin/theme_cursor.py $(PREFIX)/bin/cursor_shapes.py $(PREFIX)/bin/shake_find.py $(PREFIX)/bin/mouse-warp.py $(SYSTEMD_USER_DIR)/mouse-warp.service
 	rm -rf $(PREFIX)/lib/mouse-warp
 	systemctl --user daemon-reload
 
@@ -51,3 +54,7 @@ status:
 
 reload-config:
 	pkill -HUP -f mouse-warp.py
+
+.PHONY: test
+test:
+	python3 -m unittest discover -s tests -v

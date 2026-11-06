@@ -1,0 +1,27 @@
+--- a/hooks/theme-set.d/20-cursor
++++ b/hooks/theme-set.d/20-cursor
+@@ -8,18 +8,18 @@
+ esac
+ 
+ gsettings set org.gnome.desktop.interface cursor-theme "$cursor_theme"
+-gsettings set org.gnome.desktop.interface cursor-size 32
++gsettings set org.gnome.desktop.interface cursor-size 48
+ if [[ -n ${DISPLAY:-} ]]; then
+-  # Keep every cursor path near the previous DPI-derived size (33px at
+-  # 150 DPI), instead of shrinking the unified cursor to 24px.
+-  printf 'Xcursor.theme: %s\nXcursor.size: 32\n' "$cursor_theme" | xrdb -merge
+-  xsetroot -xcf "/usr/share/icons/$cursor_theme/cursors/left_ptr" 32
++  # Capitaine resolves requests of 32-40px to the same 36px image.
++  # Use its next native size for a visibly larger, easier-to-find cursor.
++  printf 'Xcursor.theme: %s\nXcursor.size: 48\n' "$cursor_theme" | xrdb -merge
++  xsetroot -xcf "/usr/share/icons/$cursor_theme/cursors/left_ptr" 48
+ 
+   # i3 has no GNOME settings daemon. Publish XSETTINGS so running GTK/X11
+   # clients receive changes instead of only new clients reading X resources.
+   config_dir="$(cd -- "$(dirname -- "$0")/../.." && pwd)"
+   config="$config_dir/cursor-xsettings.conf"
+-  printf 'Gtk/CursorThemeName "%s"\nGtk/CursorThemeSize 32\nNet/ThemeName "catppuccin-%s-blue-standard+default"\n' \
++  printf 'Gtk/CursorThemeName "%s"\nGtk/CursorThemeSize 48\nNet/ThemeName "catppuccin-%s-blue-standard+default"\n' \
+     "$cursor_theme" "$1" > "$config.tmp"
+   mv "$config.tmp" "$config"
+   if systemctl --user is-active --quiet catppuccin-xsettings.service; then

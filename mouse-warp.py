@@ -8,6 +8,8 @@ import signal
 import time
 import threading
 import re
+
+from shake_find import DEFAULTS as SHAKE_DEFAULTS, ShakeDetector, CursorMagnifier
 from pathlib import Path
 
 # TOML support (Python 3.11+ has tomllib, fallback to tomli)
@@ -83,7 +85,11 @@ check_binaries()
 
 CONFIG_PATH = Path.home() / ".config" / "mouse-warp" / "config.toml"
 
+shake_detector = ShakeDetector()
+magnifier = None
+
 DEFAULT_CONFIG = {
+    'shake_find': SHAKE_DEFAULTS.copy(),
     'general': {
         'poll_interval': 0.02,  # 20ms - balances responsiveness vs CPU usage
     },
@@ -171,6 +177,19 @@ def load_config():
         print(f"Config: {CONFIG_PATH} (not found, using defaults)")
         print(f"  Run 'make install' to create default config")
 
+    shake = config['shake_find']
+    if shake['appearance'] not in ('theme', 'vector', 'captured'):
+        raise ValueError('shake_find.appearance must be theme, vector or captured')
+    if not isinstance(shake['blink'], bool):
+        raise ValueError('shake_find.blink must be true or false')
+    for key in ('window', 'min_stroke', 'min_distance', 'max_jump', 'hold', 'grow', 'growth_time', 'shrink'):
+        value = shake[key]
+        if not isinstance(value, (int, float)) or not 0 < value < float('inf'):
+            raise ValueError(f'shake_find.{key} must be a finite positive number')
+    if not isinstance(shake['reversals'], int) or not 2 <= shake['reversals'] <= 20:
+        raise ValueError('shake_find.reversals must be an integer between 2 and 20')
+    if not isinstance(shake['scale'], (int, float)) or not 1 < shake['scale'] <= 6:
+        raise ValueError('shake_find.scale must be greater than 1 and at most 6')
     return config
 
 # Global config
@@ -180,6 +199,7 @@ def reload_config(signum=None, frame=None):
     """Reload configuration and refresh monitor geometry on SIGHUP."""
     global config
     config = load_config()
+    shake_detector.reset()
     # Refresh monitor geometry (function defined later, guard for module load time)
     if 'refresh_monitor_geometry' in globals():
         refresh_monitor_geometry(force=True)
@@ -818,6 +838,7 @@ def get_mouse_pos():
 
 def move_mouse(x, y):
     """Move mouse to position. Returns True on success."""
+    shake_detector.reset()
     try:
         result = subprocess.run(['xdotool', 'mousemove', str(x), str(y)],
                                 capture_output=True, timeout=1)
@@ -999,6 +1020,12 @@ def main():
     print(f"Config: {CONFIG_PATH}")
     print("Send SIGHUP to reload config" + (" (or monitors will auto-refresh)" if HAS_RANDR else ""))
 
+    global magnifier
+    try:
+        magnifier = CursorMagnifier()
+    except Exception as exc:
+        print(f'Shake-to-find unavailable: {exc}')
+
     # Start focus warp listener (i3 IPC)
     start_focus_warp_listener()
 
@@ -1012,6 +1039,20 @@ def main():
 
         x, y, shift_pressed, ctrl_pressed = query_pointer()
         now = time.time()
+        shake_now = time.monotonic()
+        if magnifier:
+            try:
+                if config['shake_find']['enabled'] and not (shift_pressed or ctrl_pressed):
+                    if shake_detector.update(x, y, shake_now, config['shake_find']):
+                        magnifier.trigger(shake_now)
+                else:
+                    shake_detector.reset()
+                magnifier.update(x, y, shake_now, config['shake_find'],
+                                 shaking=shake_detector.is_shaking(shake_now))
+            except Exception as exc:
+                print(f'Shake-to-find disabled after error: {exc}')
+                magnifier.close()
+                magnifier = None
 
         # Ctrl + movement: accelerate cursor within monitor
         if config['acceleration']['enabled'] and ctrl_pressed and prev_x is not None:
@@ -1237,8 +1278,13 @@ def main():
         time.sleep(config['general']['poll_interval'])
 
 if __name__ == '__main__':
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     try:
         main()
     except KeyboardInterrupt:
         print("\nExiting...")
         sys.exit(0)
+
+    finally:
+        if magnifier:
+            magnifier.close()

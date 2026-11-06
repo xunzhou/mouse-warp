@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+cd "$(dirname "$0")/.."
+python3 -m unittest discover -s tests -v
+python3 -m py_compile mouse-warp.py shake_find.py cursor_shapes.py theme_cursor.py
+xvfb-run -a python3 tests/x11_smoke.py
+
+if [ -d /usr/share/icons/capitaine-cursors ] && [ -d /usr/share/icons/capitaine-cursors-light ]; then
+    xvfb-run -a python3 tests/theme_artwork_smoke.py
+fi

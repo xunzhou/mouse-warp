@@ -2,7 +2,7 @@
 # Reload with: kill -SIGHUP $(pgrep -f mouse-warp)
 
 [general]
-poll_interval = 0.02 # Main loop interval in seconds (20ms balances responsiveness vs CPU)
+poll_interval = 0.04 # Main loop interval in seconds (40ms; raised from 20ms to halve idle CPU ~0.8%→~0.4% of a core). Lower toward 0.02 if Ctrl-accel/edge-wrap feels steppy.
 
 # Edge Wrapping
 # Cursor teleports to opposite edge when hitting screen boundaries
@@ -83,3 +83,19 @@ cache_ttl = 5.0 # Seconds to cache theme detection result
 enabled = true
 position = "center"    # "center" or ratio like "0.33,0.33" (top-left third)
 skip_floating = false  # Skip warping to floating windows
+
+# Shake-to-find cursor appearance and animation
+[shake_find]
+enabled = true
+appearance = "theme"  # Original theme artwork; alternatives: "vector", "captured"
+blink = true         # Two full-cursor color flips at peak size
+scale = 5.0          # Maximum magnification (greater than 1, at most 6)
+window = 0.6         # Seconds allowed for the gesture
+reversals = 3        # Direction changes on either axis
+min_stroke = 18      # Ignore smaller jitter (pixels)
+min_distance = 180   # Total travel required within the gesture (pixels)
+max_jump = 500       # Treat larger per-sample jumps as teleports
+hold = 0.7          # Seconds to stay enlarged after the last shake
+growth_time = 1.2   # Active shaking seconds to reach maximum enlargement
+grow = 0.12         # Legacy timed-animation duration (without motion input)
+shrink = 0.25       # Return animation duration

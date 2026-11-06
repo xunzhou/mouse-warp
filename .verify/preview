@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+cd "$(dirname "$0")/.."
+# The fleet launcher probes HTTP readiness; this is a desktop-only preview.
+if [ -n "${PORT:-}" ]; then
+    echo "Run manually: python3 $PWD/shake_find.py"
+    exit 0
+fi
+exec python3 shake_find.py
