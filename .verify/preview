@@ -3,7 +3,7 @@ set -eu
 cd "$(dirname "$0")/.."
 # The fleet launcher probes HTTP readiness; this is a desktop-only preview.
 if [ -n "${PORT:-}" ]; then
-    echo "Run manually: python3 $PWD/shake_find.py"
+    echo "Run manually: python3 $PWD/preview.py --installed-config --pause-service --compositor"
     exit 0
 fi
-exec python3 shake_find.py
+exec python3 preview.py --installed-config --pause-service --compositor

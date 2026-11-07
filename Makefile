@@ -12,6 +12,9 @@ install:
 	install -Dm644 shake_find.py $(PREFIX)/bin/shake_find.py
 	install -Dm644 cursor_shapes.py $(PREFIX)/bin/cursor_shapes.py
 	install -Dm644 theme_cursor.py $(PREFIX)/bin/theme_cursor.py
+	install -Dm644 compositor_support.py $(PREFIX)/bin/compositor_support.py
+	install -Dm644 mouse-warp-compositor.service $(SYSTEMD_USER_DIR)/mouse-warp-compositor.service
+	sed -i 's|@VENV_PYTHON@|$(VENV_DIR)/bin/python|; s|@COMPOSITOR_CHECK@|$(PREFIX)/bin/compositor_support.py|' $(SYSTEMD_USER_DIR)/mouse-warp-compositor.service
 	install -Dm644 mouse-warp.service $(SYSTEMD_USER_DIR)/mouse-warp.service
 	sed -i 's|@VENV_PYTHON@|$(VENV_DIR)/bin/python|' $(SYSTEMD_USER_DIR)/mouse-warp.service
 	sed -i 's|@SCRIPT_PATH@|$(PREFIX)/bin/mouse-warp.py|' $(SYSTEMD_USER_DIR)/mouse-warp.service
@@ -28,6 +31,8 @@ import-env:
 	@echo "Environment imported. You can now 'make start' or 'make enable'."
 
 uninstall:
+	-systemctl --user disable --now mouse-warp-compositor.service
+	rm -f $(SYSTEMD_USER_DIR)/mouse-warp-compositor.service $(PREFIX)/bin/compositor_support.py
 	-systemctl --user stop mouse-warp.service
 	-systemctl --user disable mouse-warp.service
 	rm -f $(PREFIX)/bin/theme_cursor.py $(PREFIX)/bin/cursor_shapes.py $(PREFIX)/bin/shake_find.py $(PREFIX)/bin/mouse-warp.py $(SYSTEMD_USER_DIR)/mouse-warp.service
@@ -58,3 +63,10 @@ reload-config:
 .PHONY: test
 test:
 	python3 -m unittest discover -s tests -v
+
+.PHONY: enable-compositor disable-compositor
+enable-compositor:
+	systemctl --user enable --now mouse-warp-compositor.service
+
+disable-compositor:
+	systemctl --user disable --now mouse-warp-compositor.service

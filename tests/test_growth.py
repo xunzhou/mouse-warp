@@ -1,8 +1,30 @@
 import unittest
-from shake_find import DEFAULTS, ShakeDetector, ShakeGrowth
+from shake_find import DEFAULTS, ShakeDetector, ShakeGrowth, arrival_scale, frame_delay
 
 
 class GrowthTests(unittest.TestCase):
+    def test_motion_holds_without_growing_until_pointer_rests(self):
+        growth = ShakeGrowth(0)
+        size = growth.step(.1, True, DEFAULTS)
+        for now in (.2, .7, 1.5, 3):
+            self.assertEqual(growth.step(now, False, DEFAULTS, moving=True), size)
+        self.assertEqual(growth.step(3.5, False, DEFAULTS), size)
+        shrinking = growth.step(3.8, False, DEFAULTS)
+        self.assertLess(shrinking, size)
+        self.assertEqual(growth.step(3.81, False, DEFAULTS, moving=True), shrinking)
+        self.assertEqual(growth.step(4, False, DEFAULTS), shrinking)
+        self.assertIsNone(growth.step(5, False, DEFAULTS))
+
+    def test_arrival_curve_and_adaptive_cadence(self):
+        self.assertEqual(arrival_scale(0, 0), 1)
+        self.assertAlmostEqual(arrival_scale(.2, 0), 2.4)
+        self.assertTrue(1 < arrival_scale(.5, 0) < 2.4)
+        self.assertIsNone(arrival_scale(.7, 0))
+        self.assertAlmostEqual(frame_delay(.04, False, False, .003), .037)
+        self.assertAlmostEqual(frame_delay(.04, False, True, .003), .017)
+        self.assertAlmostEqual(frame_delay(.04, True, False, .003), 1/60 - .003)
+        self.assertEqual(frame_delay(.04, True, False, .03), 0)
+
     def test_pause_freezes_and_resume_continues(self):
         growth = ShakeGrowth(0)
         for i in range(1, 21):

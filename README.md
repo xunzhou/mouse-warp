@@ -2,52 +2,45 @@
 
 Screen edge wrapping, monitor switching, and shake-to-find for X11.
 
-## Features
+- Wrap the pointer at screen edges, with optional resistance.
+- Hold Shift and move horizontally to jump between monitors.
+- Hold Ctrl to accelerate pointer movement.
+- Shake to enlarge the pointer using your cursor theme.
+- Optionally move the pointer to the focused window in i3.
 
-- Edge wrapping with optional time/distance/velocity resistance
-- Shift + mouse: jump between monitors
-- Ctrl + mouse: accelerated cursor movement
-- Focus-following cursor warp for i3 (optional `i3ipc` dependency)
-- Theme-aware warp highlights
-- Shake-to-find using the current cursor theme's original artwork
+## Installation
 
-## Install and service
-
-```bash
-make install enable start
-```
-
-`mouse-warp.service` runs `mouse-warp.py`, which includes shake-to-find. No
-separate shake process is needed. Installation preserves an existing
-`~/.config/mouse-warp/config.toml`. Commands:
+Requires Python 3, virtual environment support, `xdotool`, and an X11 session.
+Theme artwork requires libXcursor. Install `xrandr` and `xdpyinfo` for monitor
+detection, and `gsettings` for automatic light/dark palette detection.
+The installer creates a virtual environment for the Python dependencies.
+Service management requires systemd user services.
 
 ```bash
-make start stop restart status reload-config
+make install
+make enable
 ```
 
-Run one command at a time, e.g. `make restart`.
+Installation preserves an existing `~/.config/mouse-warp/config.toml`.
+To control the service, use `make start`, `make stop`, `make restart`,
+`make status`, or `make reload-config`.
 
-## Shake to find
-
-Quickly move back and forth to activate. Continued shaking gradually enlarges
-the cursor along a smooth curve, up to 5× after 1.2 seconds of active shaking.
-Pausing immediately stops growth. The cursor holds its current size for 0.7
-seconds, then shrinks back over 0.25 seconds. Resuming shaking during the hold or
-shrink continues from the current size. Two full-color inversions flash at the
-maximum size; continued shaking does not restart those flashes.
-
-Horizontal, vertical, and diagonal gestures work. Small jitter, slow gestures,
-straight travel, and large teleports are filtered. Mouse-warp's own warps reset
-detection; Ctrl/Shift gestures suppress it.
-
-Standalone preview using defaults (Ctrl+C exits):
+If the service cannot connect to your display, run this from your X11 session,
+then restart it:
 
 ```bash
-python3 shake_find.py
+make import-env
+make restart
 ```
 
-Avoid running the preview alongside the service, since both would detect shakes.
-The service reads `[shake_find]` from `~/.config/mouse-warp/config.toml`:
+## Configuration
+
+Edit `~/.config/mouse-warp/config.toml`, then run `make reload-config`.
+See [config.toml](config.toml) for all settings, including edge resistance,
+acceleration, feedback colors, and optional i3 focus warping (`i3ipc` required).
+
+Shake-to-find enlarges the pointer while you shake. Continued movement holds
+its size; resting lets it shrink back. The main controls are:
 
 ```toml
 [shake_find]
@@ -55,73 +48,61 @@ enabled = true
 appearance = "theme"
 scale = 5.0
 growth_time = 1.2
+window = 0.5
+reversals = 4
+min_stroke = 36
+min_distance = 240
 hold = 0.7
 shrink = 0.25
 blink = true
 ```
 
-**Existing configs specifying `appearance = "vector"` must switch to `"theme"`
-to use matching artwork.** `growth_time` controls active shaking time to maximum
-size. `scale` controls maximum enlargement. Increase `min_distance` or
-`reversals` for fewer accidental activations. Sampling follows
-`general.poll_interval` (20–40 ms recommended).
+Increase `min_distance` or `reversals` to reduce accidental activation.
+`scale` sets maximum enlargement; `growth_time` sets how long to shake to reach it.
+The `theme` appearance follows Xcursor theme and size changes. Alternatives are
+`vector` (simplified shapes) and `captured` (a snapshot of the cursor at activation).
 
-## Cursor appearance and theme changes
+Monitor jumps use a brief cursor pulse. To use edge flashes instead, set
+`highlight.monitor_cross_style = "edge_flash"`. Wraps and natural monitor
+crossings use edge flashes in either mode.
 
-`appearance = "theme"` loads the original artwork through libXcursor. It retains
-exact cursor names (including hands, carets, resize handles, and theme aliases),
-colors, outlines, hotspots, and animated frames. It follows `Xcursor.theme` and
-`Xcursor.size` from the X11 RESOURCE_MANAGER property, including changes while
-already enlarged. Catppuccin supplies white Capitaine cursors for Mocha and
-black ones for Latte. Unknown or missing cursor names use the theme's arrow.
-Application-defined custom bitmap cursors without a theme name cannot be matched
-exactly in this mode.
+## Preview
 
-The renderer loads large artwork (Capitaine supplies 96–144px images, depending
-on the shape), then resamples it with Lanczos at each requested size. Thus it
-avoids magnifying the small on-screen cursor bitmap. Above the largest supplied
-asset size, resampling is still necessary; this is not an SVG renderer. Cached
-frames keep steady-size rendering inexpensive. Pillow and libXcursor are required.
-
-The click-through SHAPE overlay works without a compositor. It preserves opaque
-artwork colors but uses a binary transparency mask, so translucent edge/shadow
-pixels cannot match the native hardware cursor exactly. The current renderer
-requires a standard 24-bit RGB X11 visual; native Wayland is not supported.
-
-Alternative appearances remain available:
-
-- `"vector"`: custom polygon shapes, theme-aware black/white color and nominal size;
-  these are approximations rather than the original theme artwork.
-- `"captured"`: enlarge the cursor snapshot taken at activation; this retains
-  custom bitmap appearance but can look pixelated and does not follow shape changes.
-
-XFixes cursor-name notifications update live theme/vector shapes without reading
-cursor images. If X11 denies an activation snapshot (`BadAccess`/`BadCursor`),
-theme/vector modes use the last reported name or the theme arrow; captured mode
-skips that activation and can retry later. Cleanup restores native visibility,
-and closing the owning X connection also releases its cursor-hide request.
-
-## Verification
-
-`make test` runs detector, growth, and error-handling unit tests.
-`bash .verify/check` also checks X11 rendering, input pass-through, restoration,
-and (when Capitaine is installed) original theme artwork and pause/resume growth.
-It requires Xvfb and xauth.
+From the checkout, using a Python environment with [requirements.txt](requirements.txt)
+installed:
 
 ```bash
-xvfb-run -a python3 tests/theme_toggle_smoke.py
+python3 preview.py --pause-service
 ```
 
-That host test exercises both Capitaine themes at 24, 32, 36, and 48px through
-`xrdb -merge` / `xsetroot -xcf`, while enlarged and between activations. It accepts
-an old `refresh-mouse-cursors` helper path as an optional argument. All tests use
-isolated displays; they do not modify the live desktop or Catppuccin configuration.
+The preview uses the checkout's config, pauses the installed service, and restores
+it on exit. Press Ctrl+C to quit. Add `--installed-config` to use your user config.
 
-## Normal cursor size
+## Compatibility
 
-Catppuccin controls the normal cursor size. `integration/catppuccin-cursor-size32.patch`
-updates the original 24px hook to 32px. `integration/catppuccin-cursor-size48.patch`
-updates an already-32px hook to 48px for better visibility. Capitaine maps requests
-of 32, 36, and 40px to its 36px artwork; 48px is the next native size. Apply only
-the appropriate patch from the Catppuccin repository and refresh its theme.
-Applications that cache cursors may need reopening.
+Requires a standard 24-bit RGB X11 display; native Wayland is unsupported.
+The cursor overlay is click-through and works without a compositor, but translucent
+edges may differ from the native cursor. Custom application cursors without a
+theme name may use the theme's arrow instead.
+
+Some applications show repaint artifacts while the enlarged cursor moves without
+a compositor. If needed, install `xcompmgr` and enable the optional compositor:
+
+```bash
+make enable-compositor
+make restart
+```
+
+It skips startup when another compositor is present. Use `make disable-compositor`
+to disable it, or add `--compositor` to the preview command for a temporary trial.
+
+## Development
+
+```bash
+make test
+bash .verify/check
+```
+
+The full check requires Xvfb and xauth; additional checks run when Capitaine cursor
+themes or `xcompmgr` are installed. X11 smoke tests use isolated displays.
+See [perf/README.md](perf/README.md) for the measurement harness and results.

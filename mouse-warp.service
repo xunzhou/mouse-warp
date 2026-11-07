@@ -1,10 +1,11 @@
 [Unit]
-Description=Mouse Warp - Screen edge wrapping and monitor switching
+Description=Mouse Warp - Shake-to-find, monitor switching and cursor arrival
 After=graphical-session.target
 PartOf=graphical-session.target
 
 [Service]
 Type=simple
+Environment=PYTHONUNBUFFERED=1
 ExecStart=@VENV_PYTHON@ @SCRIPT_PATH@
 Restart=on-failure
 RestartSec=5

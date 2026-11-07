@@ -1,12 +1,13 @@
 """Shake detection and a compositor-independent X11 cursor magnifier."""
 from collections import deque
 import math
+import re
 
 from cursor_shapes import (capture_cursor, cursor_kind, geometry,
                            subscribe_cursor_names, latest_cursor_name, cursor_style, cursor_theme)
 
-DEFAULTS = dict(enabled=True, window=0.6, reversals=3, min_stroke=18,
-                min_distance=180, max_jump=500, scale=5.0, hold=0.7,
+DEFAULTS = dict(enabled=True, window=0.5, reversals=4, min_stroke=36,
+                min_distance=240, max_jump=500, scale=5.0, hold=0.7,
                 grow=0.12, growth_time=1.2, shrink=0.25, blink=True, appearance='theme')
 
 
@@ -55,7 +56,9 @@ class ShakeDetector:
                 turns[-1] = (stamp, distance + abs(self.stroke[axis]))
             self.stroke[axis] = 0
             if (len(turns) >= options['reversals'] + 1 and
-                    sum(distance for _, distance in turns) >= options['min_distance']):
+                    # A fast sweep cannot pay for several tiny corrections.
+                    sum(min(distance, 2 * options['min_stroke'])
+                        for _, distance in turns) >= options['min_distance']):
                 self.reset()
                 self.previous = (x, y, now)
                 self.last_reversal = now
@@ -76,7 +79,7 @@ class ShakeGrowth:
         self.progress = self.hold_progress = 0.0
         self.peak_at = None
 
-    def step(self, now, shaking, options):
+    def step(self, now, shaking, options, moving=False):
         dt = max(0.0, now - self.last_time)
         self.last_time = now
         if shaking:
@@ -86,6 +89,11 @@ class ShakeGrowth:
             self.last_motion = now
             if self.progress >= 1 and self.peak_at is None:
                 self.peak_at = now
+        elif moving:
+            # Once found, ordinary motion holds the current size without
+            # adding growth. Only a resting pointer starts the release timer.
+            self.hold_progress = self.progress
+            self.last_motion = now
         else:
             elapsed = now - self.last_motion - options['hold']
             if elapsed >= options['shrink']:
@@ -116,6 +124,26 @@ def blink_color(now, started, last_shake, options):
     return 0x000000 if int(elapsed / 0.14) % 2 == 0 else 0xffffff
 
 
+def arrival_scale(now, started, maximum=2.4, duration=0.7):
+    """A restrained arrival cue: ease up, briefly hold, then ease down."""
+    t = max(0, (now - started) / duration)
+    if t >= 1:
+        return None
+    if t < 0.2:
+        v = t / 0.2
+    elif t < 0.45:
+        v = 1
+    else:
+        v = (1 - t) / 0.55
+    return 1 + (maximum - 1) * v*v*(3-2*v)
+
+
+def frame_delay(interval, active, moved, elapsed):
+    """Idle at configured cadence, sample movement at 50Hz, animate at 60Hz."""
+    target = min(interval, 1/60 if active else .02) if active or moved else interval
+    return max(0, target - elapsed)
+
+
 class CursorMagnifier:
     """Own connection: disconnect also restores XFixes cursor visibility."""
     def __init__(self):
@@ -132,6 +160,12 @@ class CursorMagnifier:
         self.cursor_theme = 'default'
         self.cursor_size, self.base_fill = 24, 0
         self.started = self.last_shake = None
+        self.arrival = None
+        self._pulse_only = False
+        self._displayed_scale = 1.0
+        self._handoff_scale = None
+        self._canvas_size = 0
+        self._last_presentation = None
         try:
             if not self.display.has_extension('XFIXES') or not self.display.has_extension('SHAPE'):
                 raise RuntimeError('XFIXES and SHAPE extensions are required')
@@ -175,6 +209,12 @@ class CursorMagnifier:
             self._read_cursor_style()
 
     def trigger(self, now):
+        if self.started is not None and self._pulse_only:
+            # Hand an arrival over to a real shake at its visible size.
+            self._handoff_scale = self._displayed_scale
+            self.arrival = None
+            self.growth = ShakeGrowth(now)
+        self._pulse_only = False
         if self.started is None:
             name = latest_cursor_name(self.display, self._style_event)
             if name is not None:
@@ -191,6 +231,14 @@ class CursorMagnifier:
             self.started = now
             self.growth = ShakeGrowth(now)
         self.last_shake = now
+
+    def pulse(self, now, maximum=2.4, duration=0.7):
+        """An active effect already locates the pointer; never restart it."""
+        if self.started is not None:
+            return
+        self.trigger(now)
+        self._pulse_only = True
+        self.arrival = (now, maximum, duration)
 
     def _frame(self, scale, outline=None):
         """Cache nearest-neighbor scaled cursor frames, with binary alpha.
@@ -306,8 +354,9 @@ class CursorMagnifier:
 
     def _theme_frame(self, scale, outline, elapsed):
         from theme_cursor import render_artwork
-        from array import array
-        nominal = max(1, round(self.cursor_size * scale))
+        # Retain subpixel scale; rounding both scale and nominal size made
+        # early growth alternate between identical frames and visible jumps.
+        nominal = max(1, round(self.cursor_size * scale * 8) / 8)
         image, xhot, yhot, index = render_artwork(
             self.cursor_theme, self.cursor_name, nominal, elapsed, outline == 0xffffff)
         key = ('theme', self.cursor_theme, self.cursor_name, nominal, outline, index)
@@ -317,15 +366,11 @@ class CursorMagnifier:
         if len(self.frames) >= 32:
             self._free_frames()
         width, height = image.size
-        # Pillow 13 replaces getdata(); retain support for older installations.
-        pixels = (image.get_flattened_data() if hasattr(image, 'get_flattened_data')
-                  else list(image.getdata()))
-        import sys
-        words = array('I', [(r << 16) | (g << 8) | b for r, g, b, _ in pixels])
+        # Pillow converts channels in C; avoid allocating one Python tuple
+        # and integer for every pixel on every animation frame.
         server_little = self.display.display.info.image_byte_order == self.X.LSBFirst
-        if server_little != (sys.byteorder == 'little'):
-            words.byteswap()
-        data = words.tobytes()
+        data = image.convert('RGB').tobytes('raw', 'BGRX' if server_little else 'XRGB')
+        alpha = image.getchannel('A').tobytes()
         pixmap = self.root.create_pixmap(width, height, 24)
         gc = pixmap.create_gc()
         rectangles = []
@@ -337,15 +382,8 @@ class CursorMagnifier:
                 pixmap.put_image(gc, 0, y, width, count, self.X.ZPixmap, 24, 0,
                                  data[y*width*4:(y+count)*width*4])
             for y in range(height):
-                x = 0
-                while x < width:
-                    if pixels[y * width + x][3] < 128:
-                        x += 1
-                        continue
-                    start = x
-                    while x < width and pixels[y * width + x][3] >= 128:
-                        x += 1
-                    rectangles.append((start, y, x-start, 1))
+                for run in re.finditer(rb'[\x80-\xff]+', alpha[y*width:(y+1)*width]):
+                    rectangles.append((run.start(), y, run.end()-run.start(), 1))
         except Exception:
             pixmap.free()
             raise
@@ -354,7 +392,7 @@ class CursorMagnifier:
         self.frames[key] = (pixmap, width, height, rectangles, xhot, yhot)
         return self.frames[key]
 
-    def update(self, x, y, now, options, shaking=None):
+    def update(self, x, y, now, options, shaking=None, moving=False):
         # Drain notifications even when idle so cursor changes cannot queue up.
         name = latest_cursor_name(self.display, self._style_event)
         if name is not None and name != self.cursor_name:
@@ -364,25 +402,50 @@ class CursorMagnifier:
                 self._free_frames()
         if self.started is None:
             return
-        if not options['enabled'] or (shaking is None and
-                now >= self.last_shake + options['hold'] + options['shrink']):
+        pulse = arrival_scale(now, *self.arrival) if self.arrival else None
+        had_pulse = self.arrival is not None
+        if pulse is None:
+            self.arrival = None
+        if pulse is None and (not options['enabled'] or
+                (shaking is None and now >= self.last_shake + options['hold'] + options['shrink']) or
+                (had_pulse and self._pulse_only and self.growth.progress == 0)):
             self.hide()
             return
         if options['appearance'] == 'captured' and self.source is None:
             self.hide()
             return
-        if shaking is None:
+        if self._handoff_scale is not None:
+            target = min(1.0, max(0.0, (self._handoff_scale - 1) /
+                                      max(0.001, options['scale'] - 1)))
+            low, high = 0.0, 1.0
+            for _ in range(24):
+                mid = (low + high) / 2
+                if mid*mid*(3 - 2*mid) < target:
+                    low = mid
+                else:
+                    high = mid
+            self.growth.progress = self.growth.hold_progress = (low + high) / 2
+            self._handoff_scale = None
+        if self._pulse_only:
+            scale, outline = 1, None
+        elif shaking is None:
             # Preserve timed activation for callers that don't supply motion.
             scale = animation_scale(now, self.started, self.last_shake, options)
             outline = blink_color(now, self.started, self.last_shake, options)
         else:
-            scale = self.growth.step(now, shaking, options)
+            scale = self.growth.step(now, shaking, options, moving=moving)
             if scale is None:
-                self.hide()
-                return
+                if pulse is None:
+                    self.hide()
+                    return
+                scale = 1
             outline = None if self.growth.peak_at is None else blink_color(
                 now, self.growth.peak_at, self.growth.last_motion, dict(options, grow=0))
-        scale = round(scale * 32) / 32
+        if pulse is not None and (pulse >= scale or not options['enabled']):
+            scale, outline = pulse, None
+        self._displayed_scale = scale
+        if options['appearance'] != 'theme':
+            scale = round(scale * 32) / 32
         if options['appearance'] == 'vector':
             # Geometry uses a nominal 32px design grid; match Xcursor.size.
             scale *= self.cursor_size / 32
@@ -392,17 +455,37 @@ class CursorMagnifier:
             render = self._vector_frame if options['appearance'] == 'vector' else self._frame
             frame = render(scale, outline)
         pixmap, width, height, mask, xhot, yhot = frame
+        # Install the next artwork and transparency before resizing: X11
+        # repaints exposed areas during ConfigureWindow using the background.
+        # Resizing first briefly paints the previous frame at the new size.
+        # At a held size only the position changes; avoid redundant shape,
+        # background and expose requests on every frame.
+        if self._last_presentation != pixmap.id:
+            self.window.change_attributes(background_pixmap=pixmap)
+            if isinstance(mask, list):
+                self.window.shape_rectangles(self.shape.SO.Set, self.shape.SK.Bounding,
+                                             self.X.Unsorted, 0, 0, mask)
+            else:
+                self.window.shape_mask(self.shape.SO.Set, self.shape.SK.Bounding, 0, 0, mask)
+        if options['appearance'] == 'theme':
+            # Keep the X window stationary in size throughout the animation.
+            # Only its explicit bounding shape is visible; the unused canvas
+            # has neither paint nor input coverage. Repeated window resizes
+            # cause transient rectangular damage on accelerated app surfaces.
+            self._canvas_size = max(self._canvas_size, self.cursor_size * 12 + 16,
+                                    width, height)
+            window_width = window_height = self._canvas_size
+        else:
+            window_width, window_height = width, height
         self.window.configure(x=x - xhot,
                               y=y - yhot,
-                              width=width, height=height, stack_mode=self.X.Above)
-        self.window.change_attributes(background_pixmap=pixmap)
-        if isinstance(mask, list):
-            self.window.shape_rectangles(self.shape.SO.Set, self.shape.SK.Bounding,
-                                         self.X.Unsorted, 0, 0, mask)
-        else:
-            self.window.shape_mask(self.shape.SO.Set, self.shape.SK.Bounding, 0, 0, mask)
-        self.window.clear_area()
-        self.window.map()
+                              width=window_width, height=window_height,
+                              stack_mode=self.X.Above)
+        if self._last_presentation != pixmap.id:
+            self.window.clear_area()
+            self._last_presentation = pixmap.id
+        if not self.hidden:
+            self.window.map()
         # Establish the visible replacement before hiding the real pointer.
         self.display.sync()
         if not self.hidden:
@@ -417,10 +500,15 @@ class CursorMagnifier:
         if self.window:
             self.window.unmap()
         self._free_frames()
+        self.arrival = None
+        self._handoff_scale = None
+        self._displayed_scale = 1.0
+        self._canvas_size = 0
         self.started = None
         self.display.sync()
 
     def _free_frames(self):
+        self._last_presentation = None
         for pixmap, _, _, mask, *_ in self.frames.values():
             pixmap.free()
             if not isinstance(mask, list):
@@ -448,13 +536,15 @@ def preview():
     print('Shake quickly back and forth to enlarge the cursor. Ctrl+C exits.', flush=True)
     try:
         while True:
+            frame_started = time.monotonic()
             pointer = magnifier.root.query_pointer()
             now = time.monotonic()
             if detector.update(pointer.root_x, pointer.root_y, now, DEFAULTS):
                 magnifier.trigger(now)
             magnifier.update(pointer.root_x, pointer.root_y, now, DEFAULTS,
-                             shaking=detector.is_shaking(now))
-            time.sleep(0.02)
+                             shaking=detector.is_shaking(now), moving=detector.moving)
+            time.sleep(frame_delay(.02, magnifier.started is not None, detector.moving,
+                                   time.monotonic() - frame_started))
     except KeyboardInterrupt:
         pass
     finally:

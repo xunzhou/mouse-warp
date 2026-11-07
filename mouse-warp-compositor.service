@@ -1,0 +1,14 @@
+[Unit]
+Description=Mouse Warp - Optional simple X11 compositor
+After=graphical-session.target
+Before=mouse-warp.service
+PartOf=mouse-warp.service graphical-session.target
+
+[Service]
+Type=simple
+ExecCondition=@VENV_PYTHON@ @COMPOSITOR_CHECK@
+ExecStart=/usr/bin/env xcompmgr -n
+PassEnvironment=DISPLAY XAUTHORITY DBUS_SESSION_BUS_ADDRESS
+
+[Install]
+WantedBy=mouse-warp.service

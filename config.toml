@@ -46,26 +46,20 @@ edge_resistance = 50 # Pixels of pressure needed to leave current monitor (0 to 
 # Colors from Catppuccin palette (auto-switches for dark/light theme)
 [highlight]
 enabled = true
-style = "edge_flash"        # "brackets" or "edge_flash" (for edge wrapping)
-monitor_cross_style = "brackets"  # "brackets" or "edge_flash" (for Shift+move and i3 workspace switches)
-#   brackets: four L-shaped corners around cursor
-#   edge_flash: bright segment on screen edge
-# Note: Natural mouse crossing at monitor boundaries always uses edge_flash
+monitor_cross_style = "cursor"  # "cursor" or "edge_flash" for teleports
+cursor_scale = 2.4      # Brief enlargement at the destination
+cursor_duration = 0.7   # Ease in, hold briefly, then shrink (seconds)
+# Natural monitor crossings and wraps always use edge flashes.
 natural_cross_threshold = 200  # pixels from edge to detect natural crossing vs teleport
 
-size = 100     # Size of indicator in pixels (brackets box size)
-thickness = 10 # Line/bracket thickness in pixels
 duration = 0.4 # Animation duration in seconds (200-600ms recommended)
 
 monitor_warp_color = "peach" # Color when jumping between monitors (Shift+move)
 edge_warp_color = "peach"    # Color when wrapping at screen edges
 
-# Brackets-specific options
-brackets_gap = 8 # Gap around cursor so pointer isn't obscured
-
-# Edge flash-specific options (only used when style = "edge_flash")
-edge_flash_length = 300   # Length of edge segment in pixels
-edge_flash_thickness = 10 # Thickness of edge segment in pixels
+# Edge flash dimensions
+edge_flash_length = 360   # Length of edge segment in pixels
+edge_flash_thickness = 12 # Thickness of edge segment in pixels
 
 # Available colors: rosewater, flamingo, pink, mauve, red, maroon,
 #                   peach, yellow, green, teal, sky, sapphire, blue, lavender
@@ -90,10 +84,10 @@ enabled = true
 appearance = "theme"  # Original theme artwork; alternatives: "vector", "captured"
 blink = true         # Two full-cursor color flips at peak size
 scale = 5.0          # Maximum magnification (greater than 1, at most 6)
-window = 0.6         # Seconds allowed for the gesture
-reversals = 3        # Direction changes on either axis
-min_stroke = 18      # Ignore smaller jitter (pixels)
-min_distance = 180   # Total travel required within the gesture (pixels)
+window = 0.5         # Seconds allowed for the gesture
+reversals = 4        # Direction changes on either axis
+min_stroke = 36      # Ignore smaller jitter (pixels)
+min_distance = 240   # Gesture travel required; each stroke contributes at most 72 pixels
 max_jump = 500       # Treat larger per-sample jumps as teleports
 hold = 0.7          # Seconds to stay enlarged after the last shake
 growth_time = 1.2   # Active shaking seconds to reach maximum enlargement

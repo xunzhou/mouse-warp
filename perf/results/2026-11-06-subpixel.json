@@ -1,0 +1,31 @@
+{
+  "repo": "/data/proj/mouse-warp/.worktrees/06-service-shake-status",
+  "wall_seconds": 9.016,
+  "cpu_seconds": 0.417,
+  "cpu_percent_one_core": 4.62,
+  "cursor_theme": "capitaine-cursors",
+  "cursor_size": 48,
+  "cursor_name": "left_ptr",
+  "frame_gap_ms": {
+    "count": 429,
+    "median": 16.721,
+    "p95": 17.376,
+    "p99": 18.927,
+    "max": 21.536
+  },
+  "update_ms": {
+    "count": 431,
+    "median": 0.241,
+    "p95": 3.829,
+    "p99": 4.508,
+    "max": 13.647
+  },
+  "synthetic_event_to_submission_ms": {
+    "count": 530,
+    "median": 9.655,
+    "p95": 17.014,
+    "p99": 19.82,
+    "max": 20.339
+  },
+  "frame_gaps_over_25ms": 0
+}

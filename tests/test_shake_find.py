@@ -10,17 +10,33 @@ class DetectorTests(unittest.TestCase):
                 for i, (x, y) in enumerate(points)]
 
     def test_horizontal_vertical_and_diagonal_shakes(self):
-        for points in ([(x, 0) for x in [0, 60, 0, 60, 0]],
-                       [(0, y) for y in [0, 60, 0, 60, 0]],
-                       [(x, x) for x in [0, 60, 0, 60, 0]]):
+        for points in ([(x, 0) for x in [0, 60, 0, 60, 0, 60]],
+                       [(0, y) for y in [0, 60, 0, 60, 0, 60]],
+                       [(x, x) for x in [0, 60, 0, 60, 0, 60]]):
             self.assertTrue(self.trace(points)[-1])
 
     def test_straight_travel_jitter_slow_motion_and_teleports(self):
         for points, interval in (([(x, 0) for x in range(0, 1000, 40)], .04),
                                  ([(x, 0) for x in [0, 4, 0, 4, 0, 4]], .04),
-                                 ([(x, 0) for x in [0, 60, 0, 60, 0]], .3),
+                                 ([(x, 0) for x in [0, 60, 0, 60, 0, 60]], .3),
                                  ([(x, 0) for x in [0, 1000, 0, 1000, 0]], .04)):
             self.assertFalse(any(self.trace(points, interval)))
+
+    def test_fast_sweeps_and_small_corrections_do_not_activate(self):
+        traces = [
+            [0, 400, 800, 1200, 1600],  # Fast straight travel.
+            [0, 300, 0, 300, 0],  # Three reversals are no longer enough.
+            [0, 400, 380, 400, 380, 400, 380],  # Small corrections.
+            [0, 400, 364, 400, 364, 400],  # Sweep cannot supply all distance.
+        ]
+        for xs in traces:
+            with self.subTest(xs=xs):
+                self.assertFalse(any(self.trace([(x, 0) for x in xs])))
+
+    def test_deliberate_shake_with_multiple_samples_per_stroke(self):
+        xs = [0, 20, 40, 60, 80, 60, 40, 20, 0,
+              20, 40, 60, 80, 60, 40, 20, 0, 20, 40, 60, 80]
+        self.assertTrue(any(self.trace([(x, 0) for x in xs], .02)))
 
     def test_reset_discards_partial_gesture(self):
         detector = ShakeDetector()

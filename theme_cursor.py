@@ -1,5 +1,6 @@
 """Load original Xcursor artwork, retaining names, hotspots and animation."""
 import ctypes as c
+import math
 from functools import lru_cache
 from PIL import Image
 
@@ -68,11 +69,29 @@ def render_artwork(theme, name, nominal_size, elapsed, invert=False):
 def _scaled_artwork(theme, name, nominal_size, index, invert):
     image, source_size, xhot, yhot, _ = load_artwork(theme, name)[index]
     ratio = nominal_size / source_size
-    dimensions = tuple(max(1, round(n * ratio)) for n in image.size)
-    # Resample premultiplied colors to avoid dark fringes around transparency.
-    image = image.resize(dimensions, Image.Resampling.LANCZOS).convert('RGBA')
+    if ratio == 1:
+        # Preserve original pixels while keeping the same padding convention
+        # as fractional frames, so canvas dimensions stay monotonic.
+        original = image.convert('RGBA')
+        image = Image.new('RGBA', (original.width + 4, original.height + 4))
+        image.paste(original, (2, 2))
+        xhot, yhot = xhot + 2, yhot + 2
+    else:
+        # Keep the hotspot pixel center fixed as fractional scale changes.
+        # A plain resize plus independently rounded hotspot makes the pointer
+        # tip wobble by up to half a pixel; align during resampling instead.
+        padding = 2
+        new_xhot, new_yhot = round(xhot * ratio) + padding, round(yhot * ratio) + padding
+        dimensions = tuple(max(1, math.ceil(n * ratio)) + 2 * padding for n in image.size)
+        transform = (1 / ratio, 0, xhot + .5 - (new_xhot + .5) / ratio,
+                     0, 1 / ratio, yhot + .5 - (new_yhot + .5) / ratio)
+        # One premultiplied affine pass avoids double filtering, fringes and
+        # integer-size stepping. Padding prevents fractional translations clipping.
+        image = image.transform(dimensions, Image.Transform.AFFINE, transform,
+                                Image.Resampling.BICUBIC).convert('RGBA')
+        xhot, yhot = new_xhot, new_yhot
     if invert:
         red, green, blue, alpha = image.split()
         image = Image.merge('RGBA', tuple(channel.point(lambda v: 255-v)
                                          for channel in (red, green, blue)) + (alpha,))
-    return image, round(xhot * ratio), round(yhot * ratio)
+    return image, xhot, yhot

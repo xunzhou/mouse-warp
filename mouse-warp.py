@@ -2,6 +2,7 @@
 # Mouse warp utility - screen edge wrapping and monitor switching
 
 import shutil
+import os
 import subprocess
 import sys
 import signal
@@ -9,7 +10,7 @@ import time
 import threading
 import re
 
-from shake_find import DEFAULTS as SHAKE_DEFAULTS, ShakeDetector, CursorMagnifier
+from shake_find import DEFAULTS as SHAKE_DEFAULTS, ShakeDetector, CursorMagnifier, frame_delay
 from pathlib import Path
 
 # TOML support (Python 3.11+ has tomllib, fallback to tomli)
@@ -83,10 +84,12 @@ check_binaries()
 # Configuration
 # ============================================================================
 
-CONFIG_PATH = Path.home() / ".config" / "mouse-warp" / "config.toml"
+CONFIG_PATH = Path(os.environ.get(
+    "MOUSE_WARP_CONFIG", Path.home() / ".config" / "mouse-warp" / "config.toml"))
 
 shake_detector = ShakeDetector()
 magnifier = None
+_arrival_requested = threading.Event()
 
 DEFAULT_CONFIG = {
     'shake_find': SHAKE_DEFAULTS.copy(),
@@ -116,19 +119,16 @@ DEFAULT_CONFIG = {
     },
     'highlight': {
         'enabled': True,
-        'style': 'edge_flash',  # brackets, edge_flash (for edge wrapping)
-        'monitor_cross_style': 'brackets',  # brackets, edge_flash (for monitor switches)
+        'monitor_cross_style': 'cursor',  # cursor, edge_flash
+        'cursor_scale': 2.4,
+        'cursor_duration': 0.7,
         'natural_cross_threshold': 200,  # pixels from edge to count as natural crossing
-        'size': 40,
-        'thickness': 3,
         'duration': 0.4,
         'monitor_warp_color': 'sky',
         'edge_warp_color': 'peach',
-        # Brackets-specific
-        'brackets_gap': 8,  # Gap around cursor
         # Edge flash-specific
-        'edge_flash_length': 100,
-        'edge_flash_thickness': 4,
+        'edge_flash_length': 120,
+        'edge_flash_thickness': 5,
         'edge_warp_duration': 1.0,  # Duration for edge wrap flash
         'monitor_cross_duration': 0.6,  # Duration for monitor crossing flash
     },
@@ -190,6 +190,10 @@ def load_config():
         raise ValueError('shake_find.reversals must be an integer between 2 and 20')
     if not isinstance(shake['scale'], (int, float)) or not 1 < shake['scale'] <= 6:
         raise ValueError('shake_find.scale must be greater than 1 and at most 6')
+    for key, upper in (('cursor_scale', 6), ('cursor_duration', 5)):
+        value = config['highlight'][key]
+        if not isinstance(value, (int, float)) or not 0 < value <= upper:
+            raise ValueError(f'highlight.{key} must be positive and at most {upper}')
     return config
 
 # Global config
@@ -431,155 +435,19 @@ def _create_shaped_window(td, width, height, color):
     NET_WM_STATE_ABOVE = td.intern_atom('_NET_WM_STATE_ABOVE')
     window.change_property(NET_WM_STATE, td.intern_atom('ATOM'), 32, [NET_WM_STATE_ABOVE])
 
+    # Decorations must not replace the underlying app's pointer or eat clicks.
+    window.shape_rectangles(shape.SO.Set, shape.SK.Input, X.Unsorted, 0, 0, [])
     return window
 
 
-def _apply_rect_shape(window, rects):
-    """Apply a shape mask from a list of (x, y, w, h) rectangles.
-
-    Uses the X11 shape extension to make only the specified rectangles visible.
-    """
-    if not rects:
-        return
-
-    # Find bounding box
-    min_x = min(r[0] for r in rects)
-    min_y = min(r[1] for r in rects)
-    max_x = max(r[0] + r[2] for r in rects)
-    max_y = max(r[1] + r[3] for r in rects)
-    pw = max_x - min_x
-    ph = max_y - min_y
-
-    if pw <= 0 or ph <= 0:
-        return
-
-    pixmap = window.create_pixmap(pw, ph, 1)
-    gc = pixmap.create_gc(foreground=0, background=0)
-    pixmap.fill_rectangle(gc, 0, 0, pw, ph)
-    gc.change(foreground=1)
-
-    for rx, ry, rw, rh in rects:
-        if rw > 0 and rh > 0:
-            pixmap.fill_rectangle(gc, rx - min_x, ry - min_y, rw, rh)
-
-    window.shape_mask(shape.SO.Set, shape.SK.Bounding, min_x, min_y, pixmap)
-    gc.free()
-    pixmap.free()
-
-
-def show_corner_brackets(x, y, color_name='sky'):
-    """Show four L-shaped corner brackets around the cursor position.
-
-    Visual: Four corners forming an implied box with a gap around the pointer.
-    Behavior: Quick pop-in with slight fade/scale-down over duration.
-    """
-    if not config['highlight']['enabled']:
-        return
-
-    color = get_color(color_name)
-    size = config['highlight']['size']
-    thickness = config['highlight']['thickness']
-    duration = config['highlight']['duration']
-    gap = config['highlight']['brackets_gap']
-
-    def animate():
-        td = None
-        window = None
-        try:
-            td = display.Display()
-
-            # Bracket arm length (each L has two arms)
-            arm_len = size // 3
-
-            # Calculate window bounds (covers all 4 brackets)
-            half_size = size // 2
-            win_x = x - half_size - gap
-            win_y = y - half_size - gap
-            win_w = size + 2 * gap
-            win_h = size + 2 * gap
-
-            window = _create_shaped_window(td, win_w, win_h, color)
-
-            # Build the 4 L-shaped brackets as rectangles
-            # Each bracket is 2 rectangles forming an L
-            # Positions relative to window origin
-
-            # Center of window (cursor position)
-            cx = half_size + gap
-            cy = half_size + gap
-
-            # Inner edge of brackets (gap from cursor)
-            inner = gap
-            # Outer edge
-            outer = half_size + gap
-
-            def make_bracket_rects(scale=1.0):
-                """Generate bracket rectangles at given scale."""
-                rects = []
-                scaled_arm = int(arm_len * scale)
-                scaled_thick = max(1, int(thickness * scale))
-
-                # Top-left bracket
-                # Horizontal arm: from (inner, inner) going left
-                tl_x = cx - int(outer * scale)
-                tl_y = cy - int(outer * scale)
-                rects.append((tl_x, tl_y, scaled_arm, scaled_thick))  # horizontal
-                rects.append((tl_x, tl_y, scaled_thick, scaled_arm))  # vertical
-
-                # Top-right bracket
-                tr_x = cx + int((outer - scaled_arm) * scale)
-                tr_y = cy - int(outer * scale)
-                rects.append((tr_x, tr_y, scaled_arm, scaled_thick))  # horizontal
-                rects.append((tr_x + scaled_arm - scaled_thick, tr_y, scaled_thick, scaled_arm))  # vertical
-
-                # Bottom-left bracket
-                bl_x = cx - int(outer * scale)
-                bl_y = cy + int((outer - scaled_thick) * scale)
-                rects.append((bl_x, bl_y, scaled_arm, scaled_thick))  # horizontal
-                rects.append((bl_x, bl_y - scaled_arm + scaled_thick, scaled_thick, scaled_arm))  # vertical
-
-                # Bottom-right bracket
-                br_x = cx + int((outer - scaled_arm) * scale)
-                br_y = cy + int((outer - scaled_thick) * scale)
-                rects.append((br_x, br_y, scaled_arm, scaled_thick))  # horizontal
-                rects.append((br_x + scaled_arm - scaled_thick, br_y - scaled_arm + scaled_thick, scaled_thick, scaled_arm))  # vertical
-
-                return rects
-
-            # Initial display at full scale
-            rects = make_bracket_rects(1.0)
-            _apply_rect_shape(window, rects)
-            window.configure(x=win_x, y=win_y)
-            window.map()
-            window.configure(stack_mode=X.Above)
-            td.sync()
-
-            # Animate: scale down slightly over duration
-            scale_steps = 8
-            step_time = duration / scale_steps
-            for i in range(scale_steps):
-                time.sleep(step_time)
-                # Scale from 1.0 down to 0.7
-                scale = 1.0 - (0.3 * (i + 1) / scale_steps)
-                rects = make_bracket_rects(scale)
-                _apply_rect_shape(window, rects)
-                td.sync()
-        except Exception as e:
-            print(f"Brackets error: {e}")
-        finally:
-            if window:
-                try:
-                    window.destroy()
-                except:
-                    pass
-            if td:
-                try:
-                    td.close()
-                except:
-                    pass
-
-    thread = threading.Thread(target=animate, daemon=True)
-    thread.start()
+def _edge_segment(cross_pos, length, limit):
+    """Clip a segment centered on the actual crossing, not on its visible half."""
+    length = max(1, round(length))
+    center = max(0, min(limit - 1, round(cross_pos)))
+    start = center - length // 2
+    end = min(limit, start + length)
+    start = max(0, start)
+    return start, end - start
 
 
 def show_edge_flash(edge, cross_pos, color_name='peach', edge_pos=None, duration=None):
@@ -592,7 +460,7 @@ def show_edge_flash(edge, cross_pos, color_name='peach', edge_pos=None, duration
         edge_pos: exact pixel position of the edge (overrides screen bounds)
         duration: optional duration override (defaults to config duration * 0.6)
     """
-    if not config['highlight']['enabled']:
+    if not config['highlight']['enabled'] or (magnifier and magnifier.started is not None):
         return
 
     color = get_color(color_name)
@@ -602,6 +470,9 @@ def show_edge_flash(edge, cross_pos, color_name='peach', edge_pos=None, duration
         duration = config['highlight']['duration'] * 0.6  # Shorter for edge flash
 
     def animate():
+        # Rapid crossings reuse the visual attention already on screen.
+        if not _indicator_lock.acquire(blocking=False):
+            return
         td = None
         window = None
         try:
@@ -616,26 +487,22 @@ def show_edge_flash(edge, cross_pos, color_name='peach', edge_pos=None, duration
             if edge == 'left':
                 edge_x = edge_pos if edge_pos is not None else 0
                 win_x = edge_x
-                win_y = max(0, cross_pos - flash_len // 2)
+                win_y, win_h = _edge_segment(cross_pos, flash_len, screen_h)
                 win_w = flash_thick
-                win_h = flash_len
             elif edge == 'right':
                 edge_x = edge_pos if edge_pos is not None else screen_w
                 win_x = edge_x - flash_thick
-                win_y = max(0, cross_pos - flash_len // 2)
+                win_y, win_h = _edge_segment(cross_pos, flash_len, screen_h)
                 win_w = flash_thick
-                win_h = flash_len
             elif edge == 'top':
                 edge_y = edge_pos if edge_pos is not None else 0
-                win_x = max(0, cross_pos - flash_len // 2)
+                win_x, win_w = _edge_segment(cross_pos, flash_len, screen_w)
                 win_y = edge_y
-                win_w = flash_len
                 win_h = flash_thick
             elif edge == 'bottom':
                 edge_y = edge_pos if edge_pos is not None else screen_h
-                win_x = max(0, cross_pos - flash_len // 2)
+                win_x, win_w = _edge_segment(cross_pos, flash_len, screen_w)
                 win_y = edge_y - flash_thick
-                win_w = flash_len
                 win_h = flash_thick
             else:
                 return
@@ -651,21 +518,35 @@ def show_edge_flash(edge, cross_pos, color_name='peach', edge_pos=None, duration
 
             window = _create_shaped_window(td, win_w, win_h, color)
 
-            # Simple rectangle shape (no complex mask needed)
-            rects = [(0, 0, win_w, win_h)]
-            _apply_rect_shape(window, rects)
+            window.shape_rectangles(shape.SO.Set, shape.SK.Bounding, X.Unsorted,
+                                    0, 0, [(0, 0, win_w, win_h)])
 
             window.configure(x=win_x, y=win_y)
             window.map()
             window.configure(stack_mode=X.Above)
             td.sync()
 
-            # Hold then fade
-            time.sleep(duration * 0.4)
-            fade_steps = 6
-            step_time = (duration * 0.6) / fade_steps
-            for _ in range(fade_steps):
-                time.sleep(step_time)
+            # Without a compositor, retract the segment rather than fake opacity.
+            started = time.monotonic()
+            while True:
+                elapsed = time.monotonic() - started
+                if elapsed >= duration or (magnifier and magnifier.started is not None):
+                    break
+                t = max(0.0, (elapsed / duration - 0.4) / 0.6)
+                remaining = 1 - t*t*(3 - 2*t)
+                if edge in ('left', 'right'):
+                    start, length = _edge_segment(cross_pos, flash_len * remaining, screen_h)
+                    rect = (0, start - win_y, win_w, length)
+                else:
+                    start, length = _edge_segment(cross_pos, flash_len * remaining, screen_w)
+                    rect = (start - win_x, 0, length, win_h)
+                # Keep geometry fixed and publish the actual visible bounds.
+                # Resizing under an unchanged shape leaves stale compositor
+                # pixels at one end until the window is destroyed.
+                window.shape_rectangles(shape.SO.Set, shape.SK.Bounding, X.Unsorted,
+                                        0, 0, [rect])
+                td.flush()
+                time.sleep(1/60)
         except Exception as e:
             print(f"Edge flash error: {e}")
         finally:
@@ -679,6 +560,7 @@ def show_edge_flash(edge, cross_pos, color_name='peach', edge_pos=None, duration
                     td.close()
                 except:
                     pass
+            _indicator_lock.release()
 
     thread = threading.Thread(target=animate, daemon=True)
     thread.start()
@@ -687,7 +569,7 @@ def show_edge_flash(edge, cross_pos, color_name='peach', edge_pos=None, duration
 def show_cursor_highlight(x, y, color_name='sky', from_pos=None, edge=None, edge_pos=None, is_edge_warp=False):
     """Show visual indicator at cursor position.
 
-    Dispatches to the appropriate indicator based on config style.
+    Shows an edge flash when an entry edge is supplied.
 
     Args:
         x, y: Destination cursor position
@@ -700,16 +582,11 @@ def show_cursor_highlight(x, y, color_name='sky', from_pos=None, edge=None, edge
     if not config['highlight']['enabled']:
         return
 
-    style = config['highlight']['style']
-
-    if style == 'edge_flash' and edge:
+    if edge:
         # For edge flash, use cursor position as cross point
         cross_pos = y if edge in ('left', 'right') else x
         duration = config['highlight']['edge_warp_duration'] if is_edge_warp else None
         show_edge_flash(edge, cross_pos, color_name, edge_pos, duration)
-    else:
-        # Default to brackets
-        show_corner_brackets(x, y, color_name)
 
 # ============================================================================
 # Focus Warp (i3 IPC)
@@ -771,23 +648,13 @@ def _on_window_focus(i3, event):
     new_x, new_y = _get_warp_position(container)
 
     # Warp cursor
-    move_mouse(new_x, new_y)
+    if not move_mouse(new_x, new_y):
+        return
     _last_focus_warp_time = time.time()
 
-    # Visual feedback
-    if config['highlight']['enabled']:
-        color = config['highlight']['monitor_warp_color']
-        style = config['highlight']['monitor_cross_style']
-        if style == 'brackets':
-            show_corner_brackets(new_x, new_y, color)
-        else:
-            # Determine entry edge based on direction
-            if cur_x < new_x:
-                show_edge_flash('left', new_y, color, edge_pos=rect.x)
-            elif cur_x > new_x:
-                show_edge_flash('right', new_y, color, edge_pos=rect.x + rect.width)
-            else:
-                show_corner_brackets(new_x, new_y, color)
+    if (config['highlight']['enabled'] and
+            config['highlight']['monitor_cross_style'] == 'cursor'):
+        _arrival_requested.set()
 
 def start_focus_warp_listener():
     """Start i3 IPC listener in a background thread."""
@@ -886,22 +753,24 @@ def warp_to_monitor(idx, from_x=None, from_y=None):
         mx1, my1, mx2, my2 = mon_list[idx]
         new_x = (mx1 + mx2) // 2
         new_y = (my1 + my2) // 2
-        move_mouse(new_x, new_y)
+        if not move_mouse(new_x, new_y):
+            return
 
-        # Use monitor_cross_style for Shift+move monitor switching
+        # Flash the destination monitor edge for explicit monitor jumps.
         if config['highlight']['enabled']:
             color = config['highlight']['monitor_warp_color']
-            style = config['highlight']['monitor_cross_style']
-            if style == 'brackets':
-                show_corner_brackets(new_x, new_y, color)
+            if config['highlight']['monitor_cross_style'] == 'cursor':
+                _arrival_requested.set()
             else:
-                # Determine entry edge based on direction
+                duration = config['highlight']['monitor_cross_duration']
                 if from_x is not None and from_x < new_x:
-                    show_edge_flash('left', new_y, color, edge_pos=mx1)
+                    show_edge_flash('left', new_y, color, edge_pos=mx1, duration=duration)
                 elif from_x is not None and from_x > new_x:
-                    show_edge_flash('right', new_y, color, edge_pos=mx2)
-                else:
-                    show_corner_brackets(new_x, new_y, color)
+                    show_edge_flash('right', new_y, color, edge_pos=mx2, duration=duration)
+                elif from_y is not None and from_y < new_y:
+                    show_edge_flash('top', new_x, color, edge_pos=my1, duration=duration)
+                elif from_y is not None and from_y > new_y:
+                    show_edge_flash('bottom', new_x, color, edge_pos=my2, duration=duration)
 
         last_warp_time = time.time()
 
@@ -1023,13 +892,19 @@ def main():
     global magnifier
     try:
         magnifier = CursorMagnifier()
+        print(f"Shake-to-find: {'enabled' if config['shake_find']['enabled'] else 'disabled'} "
+              f"({config['shake_find']['appearance']}, max {config['shake_find']['scale']}x); "
+              f"monitor arrival: {config['highlight']['monitor_cross_style']}")
     except Exception as exc:
         print(f'Shake-to-find unavailable: {exc}')
 
     # Start focus warp listener (i3 IPC)
     start_focus_warp_listener()
 
+    previous_sample = None
+    previous_sample_time = None
     while True:
+        frame_started = time.monotonic()
         # Check for RandR screen change events (non-blocking)
         if HAS_RANDR:
             while d.pending_events():
@@ -1040,6 +915,10 @@ def main():
         x, y, shift_pressed, ctrl_pressed = query_pointer()
         now = time.time()
         shake_now = time.monotonic()
+        moved = previous_sample is not None and previous_sample != (x, y)
+        sample_dt = (shake_now - previous_sample_time if previous_sample_time is not None
+                     else config['general']['poll_interval'])
+        previous_sample, previous_sample_time = (x, y), shake_now
         if magnifier:
             try:
                 if config['shake_find']['enabled'] and not (shift_pressed or ctrl_pressed):
@@ -1047,8 +926,6 @@ def main():
                         magnifier.trigger(shake_now)
                 else:
                     shake_detector.reset()
-                magnifier.update(x, y, shake_now, config['shake_find'],
-                                 shaking=shake_detector.is_shaking(shake_now))
             except Exception as exc:
                 print(f'Shake-to-find disabled after error: {exc}')
                 magnifier.close()
@@ -1133,7 +1010,8 @@ def main():
         if config['monitor_switch']['enabled']:
             threshold = config['monitor_switch']['shift_threshold']
             if prev_x is not None and shift_pressed and (now - last_warp_time) > 0.4:
-                delta = x - prev_x
+                # Adaptive rendering must not change Shift+move sensitivity.
+                delta = (x - prev_x) * config['general']['poll_interval'] / max(.001, sample_dt)
                 if delta < -threshold:
                     cur = get_monitor_at(x, y)
                     if cur > 0:
@@ -1256,8 +1134,8 @@ def main():
                 else:
                     # Teleport (i3 workspace switch) - use monitor_cross_style
                     style = config['highlight']['monitor_cross_style']
-                    if style == 'brackets':
-                        show_corner_brackets(x, y, edge_color)
+                    if style == 'cursor':
+                        _arrival_requested.set()
                     else:
                         # Determine direction for edge_flash
                         cross_duration = config['highlight']['monitor_cross_duration']
@@ -1275,7 +1153,31 @@ def main():
         # Update edge resistance tracking (must be at end of loop)
         edge_resistance.update(x, y, now)
 
-        time.sleep(config['general']['poll_interval'])
+        # Render only after motion/teleport handling, at the final position.
+        # Focus IPC only queues arrivals; all overlay X11 operations stay here.
+        if magnifier:
+            try:
+                render_now = time.monotonic()
+                if _arrival_requested.is_set():
+                    _arrival_requested.clear()
+                    magnifier.pulse(render_now, config['highlight']['cursor_scale'],
+                                    config['highlight']['cursor_duration'])
+                if magnifier.started is not None:
+                    render_x, render_y = get_mouse_pos()
+                else:
+                    render_x, render_y = x, y
+                magnifier.update(render_x, render_y, render_now, config['shake_find'],
+                                 shaking=shake_detector.is_shaking(render_now),
+                                 moving=shake_detector.moving)
+            except Exception as exc:
+                print(f'Cursor effects disabled after error: {exc}')
+                magnifier.close()
+                magnifier = None
+        active = magnifier is not None and magnifier.started is not None
+        delay = frame_delay(config['general']['poll_interval'], active,
+                            moved and not (shift_pressed or ctrl_pressed),
+                            time.monotonic() - frame_started)
+        time.sleep(0 if _arrival_requested.is_set() and magnifier else delay)
 
 if __name__ == '__main__':
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))

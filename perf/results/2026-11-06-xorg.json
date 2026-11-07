@@ -1,0 +1,139 @@
+{
+  "date": "2026-11-06",
+  "baseline_commit": "0594e3d",
+  "candidate_commit": "15cf1fe",
+  "server": "X.Org 12101025",
+  "compositor": false,
+  "pillow": "13.0.0",
+  "method": "Offscreen real main loop on DISPLAY=:0; synthetic 100Hz triangular pointer, 3s moving / 1.5s paused; 9s per run; fixed Capitaine left_ptr at 48px, max scale 5. Neither hides nor moves the real pointer. Times end at XSync, not display scanout. Order candidate1/baseline1/baseline2/candidate2.",
+  "runs": {
+    "baseline": [
+      {
+        "repo": "/data/proj/mouse-warp",
+        "wall_seconds": 9.021,
+        "cpu_seconds": 0.377,
+        "cpu_percent_one_core": 4.18,
+        "cursor_theme": "capitaine-cursors",
+        "cursor_size": 48,
+        "cursor_name": "left_ptr",
+        "frame_gap_ms": {
+          "count": 168,
+          "median": 41.121,
+          "p95": 48.576,
+          "p99": 49.154,
+          "max": 51.021
+        },
+        "update_ms": {
+          "count": 170,
+          "median": 1.002,
+          "p95": 8.506,
+          "p99": 10.906,
+          "max": 12.407
+        },
+        "synthetic_event_to_submission_ms": {
+          "count": 527,
+          "median": 23.975,
+          "p95": 45.972,
+          "p99": 52.738,
+          "max": 56.663
+        },
+        "frame_gaps_over_25ms": 168
+      },
+      {
+        "repo": "/data/proj/mouse-warp",
+        "wall_seconds": 9.034,
+        "cpu_seconds": 0.391,
+        "cpu_percent_one_core": 4.33,
+        "cursor_theme": "capitaine-cursors",
+        "cursor_size": 48,
+        "cursor_name": "left_ptr",
+        "frame_gap_ms": {
+          "count": 167,
+          "median": 41.184,
+          "p95": 48.591,
+          "p99": 51.154,
+          "max": 51.828
+        },
+        "update_ms": {
+          "count": 169,
+          "median": 1.052,
+          "p95": 8.507,
+          "p99": 11.74,
+          "max": 13.349
+        },
+        "synthetic_event_to_submission_ms": {
+          "count": 525,
+          "median": 24.188,
+          "p95": 46.174,
+          "p99": 51.767,
+          "max": 56.505
+        },
+        "frame_gaps_over_25ms": 167
+      }
+    ],
+    "candidate": [
+      {
+        "repo": "/data/proj/mouse-warp/.worktrees/06-service-shake-status",
+        "wall_seconds": 9.032,
+        "cpu_seconds": 0.265,
+        "cpu_percent_one_core": 2.94,
+        "cursor_theme": "capitaine-cursors",
+        "cursor_size": 48,
+        "cursor_name": "left_ptr",
+        "frame_gap_ms": {
+          "count": 430,
+          "median": 16.721,
+          "p95": 17.459,
+          "p99": 19.04,
+          "max": 20.469
+        },
+        "update_ms": {
+          "count": 432,
+          "median": 0.17,
+          "p95": 2.129,
+          "p99": 2.878,
+          "max": 13.525
+        },
+        "synthetic_event_to_submission_ms": {
+          "count": 530,
+          "median": 8.883,
+          "p95": 16.484,
+          "p99": 18.212,
+          "max": 18.763
+        },
+        "frame_gaps_over_25ms": 0
+      },
+      {
+        "repo": "/data/proj/mouse-warp/.worktrees/06-service-shake-status",
+        "wall_seconds": 9.015,
+        "cpu_seconds": 0.268,
+        "cpu_percent_one_core": 2.97,
+        "cursor_theme": "capitaine-cursors",
+        "cursor_size": 48,
+        "cursor_name": "left_ptr",
+        "frame_gap_ms": {
+          "count": 429,
+          "median": 16.726,
+          "p95": 17.57,
+          "p99": 19.453,
+          "max": 26.924
+        },
+        "update_ms": {
+          "count": 431,
+          "median": 0.24,
+          "p95": 2.209,
+          "p99": 3.444,
+          "max": 13.642
+        },
+        "synthetic_event_to_submission_ms": {
+          "count": 530,
+          "median": 9.011,
+          "p95": 16.7,
+          "p99": 17.98,
+          "max": 26.518
+        },
+        "frame_gaps_over_25ms": 1
+      }
+    ]
+  }
+}
